@@ -116,11 +116,25 @@ Se agregó al paquete `detector/` un validador reutilizable: agrupa las llamadas
 
 ---
 
-## 5. Semántica (Vosk ASR) — en evaluación
+## 5. Semántica (Vosk ASR) — IMPLEMENTADA en producción
 
-Se instaló `vosk` y el modelo `vosk-model-small-es-0.42`, y se transcribió el dataset completo (`python -m detector.transcribe_dataset`, cachea en `models/transcripts/`). Calidad de transcripción razonable en español a 8 kHz para este propósito (no perfecta, pero capta contenido).
+Se instaló `vosk` + modelo `vosk-model-small-es-0.42`, se transcribió el dataset completo (`python -m detector.transcribe_dataset`, cachea en `models/transcripts/`), y se entrenó con `python -m detector.train --from-wav --dual-view --with-semantic`.
 
-Pendiente de reportar en este documento: correr `python -m detector.train --from-wav --with-semantic` y validar con `detector/eval_generalization.py` (agregando semántica al set de features evaluado) antes de decidir si sube a producción — la misma regla que se le aplicó a la acústica.
+**Val: 95.8%** (68/71, 3 errores) — sube sobre el 94.4% de dialogo+dual-view solo.
+
+**A diferencia de la acústica, sí pasó la prueba dura** (`detector/eval_generalization.py`, extendido para incluir semántica):
+
+| Configuración | Accuracy media | Recall sintético medio | Peor cluster |
+|---|---|---|---|
+| Solo diálogo | 0.887 | 0.907 | 0.800 |
+| Diálogo + acústica (cualquier variante) | 0.829–0.880 | 0.707–0.890 | hasta 0.313 |
+| **Diálogo + semántica** | **0.905** | **0.937** | **0.870** |
+
+Mejora de forma consistente en los 5 clusters, sin ningún colapso — muy distinto al patrón errático de la acústica. Consistente con la hipótesis: el *contenido* de lo que dice el caller es comportamiento, no timbre de voz, así que generaliza mejor a voces nuevas.
+
+**Bug encontrado y corregido antes de activarlo**: `detector/predict.py::predict_from_wav_bytes` (la función que usa `/detect`, el camino real del juez) tenía `run_asr=False` fijo — nunca transcribía en vivo. Si se hubiera activado `with_semantic` sin arreglar esto, el endpoint le habría mandado al modelo puros ceros en las 10 features semánticas (en vez de fallar, habría fallado *silenciosamente* con predicciones sesgadas). Se cambió a `run_asr=bool(bundle.get("with_semantic"))`. Verificado con `test_endpoint.py` (que sí pega vía HTTP real, no atajos): antes del fix respondía en 0.2s (sin transcribir), después en ~8.7s (transcribiendo de verdad), con los mismos dos casos de prueba correctos.
+
+**Costo**: ~9s de latencia extra por llamada completa (medido: 170s de audio → 9.9s de transcripción, ambos canales). Nota pendiente: hoy se transcribe el audio completo *antes* de la revisión de early-exit (90s), así que una llamada que podría cortar temprano igual paga el costo de transcripción completa — no se optimizó esto en esta sesión.
 
 ---
 
@@ -135,10 +149,13 @@ Pendiente de reportar en este documento: correr `python -m detector.train --from
 ## Cómo reproducir estos análisis
 
 ```powershell
-python -m detector.train --from-wav          # reentrena y confirma 91.5% val
-python -m detector.eval_vad                   # IoU del VAD vs turns oficiales (0.918 / 0.981)
-python -m detector.eval_generalization        # leave-one-voice-cluster-out: dialogo vs acustica
+python -m detector.transcribe_dataset                            # una vez, cachea transcripciones
+python -m detector.train --from-wav --dual-view --with-semantic  # reentrena, confirma ~95.8% val
+python -m detector.eval_vad                                       # IoU del VAD vs turns oficiales (0.918 / 0.981)
+python -m detector.eval_generalization                             # leave-one-voice-cluster-out: dialogo/acustica/semantica
 python -m uvicorn detector.app:app --host 127.0.0.1 --port 8000
-python -m detector.test_endpoint call_0e1e2f29bfdc   # esperado: human
+python -m detector.test_endpoint call_0e1e2f29bfdc   # esperado: human (~8-9s por el ASR en vivo)
 python -m detector.test_endpoint call_4d8129939686   # esperado: synthetic
 ```
+
+**Estado final de esta sesión**: 88.7% (original) → 91.5% (+ VAD por canal) → 94.4% (+ dual-view de la compañera) → **95.8% (+ semántica validada)**. Acústica evaluada y descartada en dos formas independientes (por mí con `eval_generalization.py`, por la compañera con val normal).

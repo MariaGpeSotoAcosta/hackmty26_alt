@@ -25,8 +25,8 @@ from sklearn.preprocessing import StandardScaler
 
 from detector.acoustic import ACOUSTIC_FEATURES
 from detector.features import DIALOGUE_FEATURES, vectorize
+from detector.semantic import SEMANTIC_FEATURES
 from detector.train import extract_dataset
-
 
 def _logreg() -> Pipeline:
     clf = LogisticRegression(C=0.4, class_weight="balanced", max_iter=800, solver="lbfgs")
@@ -105,13 +105,15 @@ class GatedAcousticModel:
 
 
 def main() -> None:
-    print("extracting dialogue + acoustic features from WAV (production VAD)...")
-    frame = extract_dataset(from_wav=True, with_semantic=False, with_acoustic=True)
+    print("extracting dialogue + acoustic + semantic features from WAV (production VAD)...")
+    frame = extract_dataset(from_wav=True, with_semantic=True, with_acoustic=True)
     y = (frame["label"].to_numpy() == "synthetic").astype(int)
 
     X_dialogue = np.vstack([vectorize(row, DIALOGUE_FEATURES) for row in frame.to_dict(orient="records")])
     X_acoustic = np.vstack([vectorize(row, ACOUSTIC_FEATURES) for row in frame.to_dict(orient="records")])
+    X_semantic = np.vstack([vectorize(row, SEMANTIC_FEATURES) for row in frame.to_dict(orient="records")])
     X_combo = np.concatenate([X_dialogue, X_acoustic], axis=1)
+    X_dialogue_semantic = np.concatenate([X_dialogue, X_semantic], axis=1)
 
     print(f"\n{len(frame)} llamadas  (synthetic={int(y.sum())}  human={int((1 - y).sum())})")
 
@@ -132,10 +134,16 @@ def main() -> None:
     print(res_gated.to_string(index=False))
     print(f"recall promedio en voz oculta: {res_gated.synth_recall.mean():.3f}")
 
+    print("\n=== Candidato: dialogo + semantica (Vosk), mismos clusters de voz (proxy acustico) ===")
+    res_semantic = leave_one_voice_cluster_out(X_dialogue_semantic, y, X_acoustic)
+    print(res_semantic.to_string(index=False))
+    print(f"recall promedio en voz oculta: {res_semantic.synth_recall.mean():.3f}")
+
     print("\n=== Comparacion ===")
     print(f"solo dialogo        -> accuracy media: {res_dialogue.accuracy.mean():.3f}  recall medio: {res_dialogue.synth_recall.mean():.3f}")
     print(f"dialogo+acust (todo)-> accuracy media: {res_combo.accuracy.mean():.3f}  recall medio: {res_combo.synth_recall.mean():.3f}")
     print(f"dialogo+acust (gate)-> accuracy media: {res_gated.accuracy.mean():.3f}  recall medio: {res_gated.synth_recall.mean():.3f}")
+    print(f"dialogo+semantica   -> accuracy media: {res_semantic.accuracy.mean():.3f}  recall medio: {res_semantic.synth_recall.mean():.3f}")
 
 
 if __name__ == "__main__":
