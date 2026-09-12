@@ -18,7 +18,7 @@ WAV estéreo 8 kHz
 
 ## Entrada de audio
 
-El endpoint `POST /detect` recibe un WAV estéreo 8 kHz: cuerpo `RIFF` crudo, o JSON con el audio en base64 (`audio_base64`, `audio`, `wav` o `clip`). `POST /detect/upload` hace lo mismo con un archivo.
+El endpoint `POST /detect` recibe un WAV estéreo 8 kHz: archivo adjunto (`multipart`, campo `file`), JSON con el audio en base64 (`audio_base64`, `audio`, `wav` o `clip`), o el cuerpo `RIFF` crudo.
 
 `io_wav` normaliza a `float32` en \([-1, 1]\) y fuerza dos canales. Canal 0 = caller (quien se clasifica). Canal 1 = agente (contexto: a qué está respondiendo el caller).
 
@@ -139,6 +139,8 @@ Las 21 features se estandarizan (`StandardScaler`) y entran a una **regresión l
 
 - `p ≥ 0.5` → `is_synthetic: true`
 - `confidence = p` si es sintético, `1 − p` si es humano
+
+Platt hace que `p` y `confidence` se alineen con la frecuencia real de aciertos en val (diagrama en `models/calibration_val.png`).
 
 Se usa logística y no un boosting de árboles: la frontera es una combinación de timings, no una memorización de callers.
 
