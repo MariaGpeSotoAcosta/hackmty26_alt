@@ -1,0 +1,7 @@
+import json
+
+with open("turns/call_0181ce113ebe.json") as f:
+    data = json.load(f)
+
+print(data["turns"][:5])  # primeros 5 turnos, para ver el formato real
+print("Total de turnos:", len(data["turns"]))
