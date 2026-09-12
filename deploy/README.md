@@ -8,7 +8,7 @@ Pasos para dejar `/detect` público y alcanzable durante el juicio.
 2. **Deploy New Server** → **Cloud Compute (Shared CPU)**.
 3. Ubicación: la más cercana al lugar del evento (menor latencia).
 4. Imagen: **Ubuntu 22.04 LTS x64**.
-5. Plan: el más barato (1 vCPU / 1GB RAM) sobra — el modelo es una regresión logística sobre 21 números, no hay red neuronal pesada.
+5. Plan: el más barato (1 vCPU / 1GB RAM) sobra — el modelo es una regresión logística sobre 22 números, no hay red neuronal pesada.
 6. En "SSH Keys": suban su llave pública (o generen una ahí). Sin esto, solo van a poder entrar con contraseña por email, más lento y menos seguro.
 7. Deploy. En 1-2 minutos les dan una **IP pública**.
 

@@ -28,6 +28,7 @@ DIALOGUE_FEATURES = [
     "lat_med",
     "lat_p90",
     "lat_std",
+    "lat_cv",
     "first_latency",
     "silence_fill",
     "silence_fill_rate",
@@ -54,6 +55,8 @@ def extract_dialogue_features(turns: list[dict], duration_s: float | None = None
     n_agent = len(agent)
 
     latencies = _response_latencies(caller, agent)
+    lat_mean = _mean(latencies)
+    lat_std = _std(latencies)
     barges = _barge_count(caller, agent)
     agent_barges = _barge_count(agent, caller)
     overlap_s = _overlap_seconds(caller, agent)
@@ -76,10 +79,11 @@ def extract_dialogue_features(turns: list[dict], duration_s: float | None = None
         "agent_barge": float(agent_barges),
         "overlap_s": overlap_s,
         "overlap_rate": overlap_s / duration_s,
-        "lat_mean": _mean(latencies),
+        "lat_mean": lat_mean,
         "lat_med": _percentile(latencies, 50),
         "lat_p90": _percentile(latencies, 90),
-        "lat_std": _std(latencies),
+        "lat_std": lat_std,
+        "lat_cv": lat_std / lat_mean if lat_mean > 1e-6 else 0.0,
         "first_latency": latencies[0] if latencies else 0.0,
         "silence_fill": float(fills),
         "silence_fill_rate": fills / n_caller if n_caller else 0.0,

@@ -8,7 +8,7 @@ La decisión no usa el timbre ni el texto. Usa **cómo se engancha el caller con
 WAV estéreo 8 kHz
     → decodificar a dos canales float32
     → VAD de energía por canal
-    → 21 features de diálogo
+    → 22 features de diálogo
     → logística calibrada (p = P(sintético))
     → is_synthetic = (p ≥ 0.5)
     → confidence = max(p, 1 − p)
@@ -65,7 +65,7 @@ Los dos listados se mezclan y se ordenan por `start`. A partir de ahí el audio 
 
 ## Cómo se construye cada feature
 
-Hay 21 números. Todas salen de los turnos del caller \(C\) y del agente \(A\). \(T\) es la duración de la llamada.
+Hay 22 números. Todas salen de los turnos del caller \(C\) y del agente \(A\). \(T\) es la duración de la llamada.
 
 ### Tamaño de la conversación
 
@@ -90,6 +90,7 @@ Para cada turno del caller se busca el turno del agente que **terminó justo ant
 | `lat_med` | Mediana. Menos sensible a un solo silencio largo. |
 | `lat_p90` | Percentil 90. La espera larga típica, no la extrema. |
 | `lat_std` | Dispersión de las esperas. |
+| `lat_cv` | `std / mean` de las esperas. Regularidad relativa: un bot rápido también es metrónomo; `lat_std` solo no lo delata porque las esperas son cortas. |
 | `first_latency` | La primera latencia de la llamada (saludo / primer dato). |
 
 ### Interrupciones y overlap
@@ -120,7 +121,7 @@ El caller sintético no es “una voz rara”. Es un sistema que **oye, piensa y
 
 - **Espera más.** Entre el fin del agente y su respuesta hay cola de ASR + LLM. Humanos del dataset contestan cerca de 2 s; sintéticos suelen irse a 3–5 s. Por eso `lat_med` y `lat_mean` altos empujan a sintético.
 - **Habla en bloques más largos.** El LLM entrega un párrafo; la persona corta, asiente, pregunta. `turn_caller_mean` alto → sintético.
-- **Es más metrónomo.** La misma pila tarda parecido cada turno. Un humano a veces dispara y a veces se queda pensando: `lat_std` alto → humano.
+- **Es más metrónomo.** La misma pila tarda parecido cada turno, sea lenta o rápida. `lat_cv` bajo → sintético. Un humano a veces dispara y a veces se queda pensando.
 - **Deja más aire al agente.** Si el caller es un bot que suelta respuestas largas y espera el siguiente prompt, el agente ocupa menos fracción de la llamada. `agent_speech_ratio` alto → humano. `caller_speech_ratio` alto también apunta a humano: la persona se mete más a menudo, no solo en monólogos.
 - **Interrumpe distinto.** El barge-in humano es frecuente e irregular. El bot suele esperar a que el agente termine; cuando el agente lo pisa (`agent_barge`), a veces es porque el bot no cede el canal.
 
@@ -128,28 +129,28 @@ Los pesos de la logística (signo **+** = hacia sintético, tras estandarizar) o
 
 | Peso | Feature | Hacia sintético cuando… | Hacia humano cuando… |
 |---|---|---|---|
-| −1.68 | `agent_speech_ratio` | El agente ocupa poco de la llamada | El agente habla una fracción grande |
-| +1.60 | `lat_med` | La espera típica es larga | Contesta pronto |
-| −1.47 | `caller_speech_ratio` | El caller ocupa poco (pocos metidos) | El caller se mete más en el tiempo total |
-| +1.41 | `lat_mean` | La espera promedio es larga | Igual que `lat_med`, media |
-| +1.15 | `turn_caller_mean` | Turnos largos tipo párrafo | Turnos cortos |
-| +0.74 | `turn_caller_std` | Largos muy variables *y* ya controlando la media | Turnos de tamaño parecido y cortos |
-| −0.63 | `lat_std` | Esperas casi iguales (reloj de pila) | Esperas irregulares |
-| −0.53 | `lat_p90` | (residual: con media/mediana altas, un p90 extra no suma bot) | Cola de esperas muy desigual |
-| −0.52 | `duration_s` | Llamadas más cortas | Llamadas más largas |
-| +0.51 | `barge_rate` | Interrumpe una fracción alta de *sus* turnos, en el patrón del bot | — |
-| −0.45 | `overlap_s` | Poco habla a la vez | Más solape |
-| +0.44 | `agent_barge` | El agente lo pisa seguido | El caller cede menos de esa forma |
+| −1.64 | `agent_speech_ratio` | El agente ocupa poco de la llamada | El agente habla una fracción grande |
+| −1.40 | `caller_speech_ratio` | El caller ocupa poco (pocos metidos) | El caller se mete más en el tiempo total |
+| +1.28 | `lat_mean` | La espera promedio es larga | Contesta pronto |
+| +1.16 | `turn_caller_mean` | Turnos largos tipo párrafo | Turnos cortos |
+| +1.14 | `lat_med` | La espera típica es larga | Contesta pronto |
+| −1.00 | `lat_cv` | Esperas casi del mismo largo relativo (reloj de pila) | Unas cortas y otras muy largas |
+| +0.80 | `turn_caller_std` | Largos muy variables *y* ya controlando la media | Turnos de tamaño parecido y cortos |
+| −0.70 | `lat_p90` | (residual: con media/mediana altas, un p90 extra no suma bot) | Cola de esperas muy desigual |
+| +0.59 | `barge_rate` | Interrumpe una fracción alta de *sus* turnos, en el patrón del bot | — |
+| −0.48 | `duration_s` | Llamadas más cortas | Llamadas más largas |
+| −0.48 | `overlap_s` | Poco habla a la vez | Más solape |
+| +0.47 | `agent_barge` | El agente lo pisa seguido | El caller cede menos de esa forma |
 
-Las que **más separan** son las tres primeras: fracción de habla del agente, mediana de latencia, y fracción de habla del caller. El resto afina regularidad e interrupciones. `n_caller`, `n_agent`, `turn_caller_cv`, `first_latency`, `barge_in` crudo, `overlap_rate` y los silence-fills pesan menos; el modelo las tiene porque describen la misma geometría, no porque cada una corte sola.
+Las que **más separan** son fracción de habla de cada lado, espera media/mediana, largo de turno y `lat_cv`. El resto afina interrupciones. `n_caller`, `n_agent`, `turn_caller_cv`, `lat_std`, `first_latency`, `barge_in` crudo, `overlap_rate` y los silence-fills pesan menos; el modelo las tiene porque describen la misma geometría, no porque cada una corte sola.
 
-Hay callers humanos muy pacientes (latencia alta, casi sin barge-in) y bots con pila rápida (latencia ~2 s). Esos se parecen en este espacio y el modelo los puede cruzar.
+`lat_cv` atrapa bots con pila rápida (esperas ~2 s pero casi iguales). Quedan humanos muy pacientes: esperan 5–19 s como si hubiera cola de ASR, aunque de forma irregular. En este espacio se parecen a un bot lento y el modelo los puede cruzar.
 
 ---
 
 ## Clasificador
 
-Las 21 features se estandarizan (`StandardScaler`) y entran a una **regresión logística** (`C=0.4`, clases balanceadas, `lbfgs`). Encima hay **calibración sigmoide** (Platt, 3 folds sobre train): el número que sale es una probabilidad, no solo un score lineal.
+Las 22 features se estandarizan (`StandardScaler`) y entran a una **regresión logística** (`C=0.4`, clases balanceadas, `lbfgs`). Encima hay **calibración sigmoide** (Platt, 3 folds sobre train): el número que sale es una probabilidad, no solo un score lineal.
 
 - `p ≥ 0.5` → `is_synthetic: true`
 - `confidence = p` si es sintético, `1 − p` si es humano
@@ -167,4 +168,4 @@ Cada llamada de **train** entra dos veces, misma etiqueta:
 
 Val e inferencia usan **solo** la vista VAD. El JSON oficial enseña al modelo la geometría “limpia” de la conversación; el VAD le enseña la geometría ruidosa que va a ver siempre. Las dos vistas son el mismo fenómeno (timing), no un segundo sensor (voz o texto).
 
-El artefacto es `models/dialogue_model.joblib`: pipeline, nombres de las 21 features y el corte en 0.5.
+El artefacto es `models/dialogue_model.joblib`: pipeline, nombres de las 22 features y el corte en 0.5.
