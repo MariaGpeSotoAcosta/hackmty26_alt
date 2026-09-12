@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from typing import Any
 
@@ -47,9 +48,21 @@ def _fallback() -> dict[str, Any]:
 def _verdict_from_bytes(data: bytes) -> dict[str, Any]:
     try:
         result = predict_from_wav_bytes(data, _bundle())
-        return {"is_synthetic": result["is_synthetic"], "confidence": result["confidence"]}
+        conf = float(result["confidence"])
+        if conf < 0.0 or conf > 1.0:
+            conf = 0.52
+        return {"is_synthetic": bool(result["is_synthetic"]), "confidence": conf}
     except Exception:
         return _fallback()
+
+
+def _b64_to_wav(value: str) -> bytes:
+    text = value.strip()
+    if text.startswith("data:") and "," in text:
+        text = text.split(",", 1)[1]
+    text = "".join(text.split())
+    pad = (-len(text)) % 4
+    return base64.b64decode(text + ("=" * pad))
 
 
 def _extract_payload(body: bytes, content_type: str) -> bytes | None:
@@ -66,7 +79,10 @@ def _extract_payload(body: bytes, content_type: str) -> bytes | None:
             for key in ("audio_base64", "audio", "wav", "clip", "data"):
                 value = payload.get(key)
                 if isinstance(value, str) and value:
-                    return value.encode("ascii")
+                    try:
+                        return _b64_to_wav(value)
+                    except Exception:
+                        return None
         return None
     return body
 
@@ -110,7 +126,13 @@ async def _verdict_response(data: bytes | None) -> JSONResponse:
                 "application/json": {
                     "schema": {
                         "type": "object",
-                        "properties": {"audio_base64": {"type": "string"}},
+                        "properties": {
+                            "call_id": {"type": "string"},
+                            "audio_base64": {"type": "string"},
+                            "sample_rate": {"type": "integer"},
+                            "channels": {"type": "integer"},
+                        },
+                        "required": ["audio_base64"],
                     }
                 },
                 "application/octet-stream": {"schema": {"type": "string", "format": "binary"}},

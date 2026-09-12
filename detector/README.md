@@ -18,7 +18,21 @@ WAV estéreo 8 kHz
 
 ## Entrada de audio
 
-El endpoint `POST /detect` recibe un WAV estéreo 8 kHz: archivo adjunto (`multipart`, campo `file`), JSON con el audio en base64 (`audio_base64`, `audio`, `wav` o `clip`), o el cuerpo `RIFF` crudo.
+El juez llama `POST /detect` en JSON:
+
+```json
+{"call_id": "...", "audio_base64": "<base64 del WAV completo>", "sample_rate": 8000, "channels": 2}
+```
+
+Respuesta HTTP 200: `{"is_synthetic": true, "confidence": 0.87}`. `is_synthetic` es booleano obligatorio; `confidence` está en `[0, 1]`. Siempre la mandamos: si todas las respuestas la traen, el juez reporta AUC y calibración y la usa para desempatar. Timeout: 30 s. Un timeout, un status distinto de 200 o un `is_synthetic` que no sea booleano cuenta como incorrecto. El cuerpo JSON pesa hasta ~5 MB.
+
+El cliente del juez (librería estándar) está en el repo:
+
+```
+python scripts/check_endpoint.py --url http://localhost:8000/detect --split val --n 20
+```
+
+También acepta archivo adjunto (`multipart`, campo `file`) o el cuerpo `RIFF` crudo.
 
 `io_wav` normaliza a `float32` en \([-1, 1]\) y fuerza dos canales. Canal 0 = caller (quien se clasifica). Canal 1 = agente (contexto: a qué está respondiendo el caller).
 
