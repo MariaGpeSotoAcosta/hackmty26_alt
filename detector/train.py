@@ -222,6 +222,7 @@ def train(
         "val_accuracy": val_acc,
         "train_accuracy": train_acc,
         "tiebreak": False,
+        "early_exit": False,
     }
     _attach_acoustic_tiebreak(bundle, frame, val_acc)
     # Judge path is VAD. Dual-view train acc is not comparable to the old 91.5%.
@@ -271,7 +272,9 @@ def _attach_acoustic_tiebreak(bundle: dict, frame: pd.DataFrame, dialogue_val: f
     bundle["acoustic_feature_names"] = list(ACOUSTIC_FEATURES)
     bundle["tiebreak_lo"] = lo
     bundle["tiebreak_hi"] = hi
-    if blend_acc >= dialogue_val:
+    # Strict > : an exact tie (this val: 0.944 vs 0.944) is not a reason to
+    # ship acoustics. Hidden voices lose recall under that extra model.
+    if blend_acc > dialogue_val:
         bundle["tiebreak"] = True
         bundle["val_accuracy"] = blend_acc
         print("enabled acoustic tiebreak on grey-zone dialogue scores")

@@ -120,7 +120,7 @@ def _predict_audio(
     early_lo = float(bundle.get("early_exit_lo", 0.05))
     early_hi = float(bundle.get("early_exit_hi", 0.95))
     n_early = int(early_s * sr)
-    use_early = bool(bundle.get("early_exit", True)) and audio.shape[0] > n_early + sr
+    use_early = bool(bundle.get("early_exit", False)) and audio.shape[0] > n_early + sr
     if use_early:
         prefix = _classify_clip(audio[:n_early], sr, bundle, transcript)
         p = float(prefix["p_synthetic"])
