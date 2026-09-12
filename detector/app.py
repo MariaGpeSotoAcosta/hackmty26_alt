@@ -33,6 +33,7 @@ def health() -> dict[str, Any]:
         "features": bundle.get("feature_names") if ready else [],
         "val_accuracy": bundle.get("val_accuracy") if ready else None,
         "tiebreak": bundle.get("tiebreak") if ready else False,
+        "early_exit": bundle.get("early_exit", True) if ready else False,
     }
 
 

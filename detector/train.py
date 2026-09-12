@@ -79,10 +79,41 @@ def extract_dataset(from_wav: bool, with_semantic: bool, with_acoustic: bool) ->
         feats["anon_id"] = anon_id
         feats["label"] = row["label"]
         feats["split"] = row["split"]
+        feats["view"] = "vad" if from_wav or extract_acoustic else "turns"
         rows.append(feats)
         if (i + 1) % 25 == 0:
             print(f"features {i + 1}/{len(df)}")
     return pd.DataFrame(rows)
+
+
+def _official_turns_train_rows(with_semantic: bool) -> pd.DataFrame:
+    """Second view of train only. Val and /detect stay on VAD."""
+    df = pd.read_csv(MANIFEST)
+    rows: list[dict] = []
+    for row in df[df["split"] == "train"].itertuples():
+        tpath = turns_path(row.anon_id)
+        if not tpath.exists():
+            continue
+        transcript = load_transcript(row.anon_id) if with_semantic else None
+        feats = extract_all_features(
+            load_official_turns(tpath),
+            float(row.duration_s),
+            transcript=transcript,
+            with_semantic=with_semantic,
+            with_acoustic=False,
+        )
+        feats["anon_id"] = row.anon_id
+        feats["label"] = row.label
+        feats["split"] = "train"
+        feats["view"] = "turns"
+        rows.append(feats)
+    return pd.DataFrame(rows)
+
+
+def _vad_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    if "view" not in frame.columns:
+        return frame
+    return frame[frame["view"] != "turns"].copy()
 
 
 def _split_xy(frame: pd.DataFrame, names: list[str], split: str) -> tuple[np.ndarray, np.ndarray]:
@@ -127,18 +158,38 @@ def _report(name: str, y_true: np.ndarray, proba: np.ndarray) -> float:
     return acc
 
 
-def train(from_wav: bool, with_semantic: bool, with_acoustic: bool) -> Path:
+def train(
+    from_wav: bool,
+    with_semantic: bool,
+    with_acoustic: bool,
+    *,
+    dual_view: bool = False,
+    reuse_csv: bool = False,
+) -> Path:
     print(
-        f"extracting features from_wav={from_wav} semantic={with_semantic} acoustic={with_acoustic}"
+        f"extracting features from_wav={from_wav} semantic={with_semantic} "
+        f"acoustic={with_acoustic} dual_view={dual_view} reuse_csv={reuse_csv}"
     )
-    frame = extract_dataset(from_wav, with_semantic, with_acoustic)
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    frame.to_csv(FEATURES_CSV, index=False)
+    if reuse_csv and FEATURES_CSV.exists():
+        frame = pd.read_csv(FEATURES_CSV)
+        if "view" not in frame.columns:
+            frame["view"] = "vad" if from_wav else "turns"
+        print(f"reused {FEATURES_CSV}  rows={len(frame)}")
+    else:
+        frame = extract_dataset(from_wav, with_semantic, with_acoustic)
+        MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        vad_out = _vad_rows(frame)
+        vad_out.to_csv(FEATURES_CSV, index=False)
+
+    if dual_view:
+        extra = _official_turns_train_rows(with_semantic)
+        print(f"dual-view: +{len(extra)} official-turns train rows")
+        frame = pd.concat([frame, extra], ignore_index=True)
 
     names = feature_names(with_semantic, with_acoustic)
     x_train, y_train = _split_xy(frame, names, "train")
-    x_val, y_val = _split_xy(frame, names, "val")
-    print("train", x_train.shape, "val", x_val.shape)
+    x_val, y_val = _split_xy(_vad_rows(frame), names, "val")
+    print("train", x_train.shape, "val", x_val.shape, "(val = VAD only)")
 
     candidates = [("logreg", _logreg()), ("hgb", _hgb())]
     scored: list[tuple[str, object, float, float]] = []
@@ -164,6 +215,7 @@ def train(from_wav: bool, with_semantic: bool, with_acoustic: bool) -> Path:
         "model": best_model,
         "feature_names": names,
         "from_wav": from_wav,
+        "dual_view": dual_view,
         "with_semantic": with_semantic,
         "with_acoustic": with_acoustic,
         "model_name": best_name,
@@ -172,6 +224,10 @@ def train(from_wav: bool, with_semantic: bool, with_acoustic: bool) -> Path:
         "tiebreak": False,
     }
     _attach_acoustic_tiebreak(bundle, frame, val_acc)
+    # Judge path is VAD. Dual-view train acc is not comparable to the old 91.5%.
+    vad_train_acc = _score_split(frame, bundle, "train")
+    bundle["train_accuracy"] = vad_train_acc
+    print(f"VAD-only train acc={vad_train_acc:.3f}  (what /detect sees)")
     joblib.dump(bundle, MODEL_PATH)
     print("wrote", MODEL_PATH)
     _print_logreg_weights(best_model, names)
@@ -182,8 +238,11 @@ def train(from_wav: bool, with_semantic: bool, with_acoustic: bool) -> Path:
 def _attach_acoustic_tiebreak(bundle: dict, frame: pd.DataFrame, dialogue_val: float) -> None:
     if not all(col in frame.columns for col in ACOUSTIC_FEATURES):
         return
-    x_train, y_train = _split_xy(frame, ACOUSTIC_FEATURES, "train")
-    x_val, y_val = _split_xy(frame, ACOUSTIC_FEATURES, "val")
+    vad = _vad_rows(frame)
+    if not all(col in vad.columns for col in ACOUSTIC_FEATURES):
+        return
+    x_train, y_train = _split_xy(vad, ACOUSTIC_FEATURES, "train")
+    x_val, y_val = _split_xy(vad, ACOUSTIC_FEATURES, "val")
     ac_model = _logreg()
     ac_model.fit(x_train, y_train)
     ac_val = _report("acoustic-only VAL", y_val, _proba(ac_model, x_val))
@@ -196,7 +255,8 @@ def _attach_acoustic_tiebreak(bundle: dict, frame: pd.DataFrame, dialogue_val: f
     trial["tiebreak_lo"] = lo
     trial["tiebreak_hi"] = hi
     y_true, y_hat, n_flip = [], [], 0
-    val = frame[frame["split"] == "val"]
+    val = _vad_rows(frame)
+    val = val[val["split"] == "val"]
     for row in val.to_dict(orient="records"):
         gold = row["label"] == "synthetic"
         off = classify_features(row, {**trial, "tiebreak": False})
@@ -246,8 +306,20 @@ def _proba(model, x: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-scores))
 
 
+def _score_split(frame: pd.DataFrame, bundle: dict, split: str) -> float:
+    part = _vad_rows(frame)
+    part = part[part["split"] == split]
+    y_true, y_hat = [], []
+    for row in part.to_dict(orient="records"):
+        out = classify_features(row, bundle)
+        y_true.append(row["label"] == "synthetic")
+        y_hat.append(out["is_synthetic"])
+    return float(np.mean(np.array(y_true) == np.array(y_hat)))
+
+
 def _dump_error_ids(frame: pd.DataFrame, bundle: dict) -> None:
-    val = frame[frame["split"] == "val"]
+    val = _vad_rows(frame)
+    val = val[val["split"] == "val"]
     wrong = []
     for row in val.to_dict(orient="records"):
         out = classify_features(row, bundle)
@@ -264,8 +336,24 @@ def main() -> None:
     parser.add_argument("--from-wav", action="store_true", help="VAD on WAV (production / judge path)")
     parser.add_argument("--with-semantic", action="store_true")
     parser.add_argument("--with-acoustic", action="store_true")
+    parser.add_argument(
+        "--dual-view",
+        action="store_true",
+        help="Also train on official turns for train calls; val and /detect stay VAD",
+    )
+    parser.add_argument(
+        "--reuse-csv",
+        action="store_true",
+        help="Reuse models/dialogue_features.csv instead of re-extracting WAVs",
+    )
     args = parser.parse_args()
-    train(args.from_wav, args.with_semantic, args.with_acoustic)
+    train(
+        args.from_wav,
+        args.with_semantic,
+        args.with_acoustic,
+        dual_view=args.dual_view,
+        reuse_csv=args.reuse_csv,
+    )
 
 
 if __name__ == "__main__":

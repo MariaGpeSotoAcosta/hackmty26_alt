@@ -81,6 +81,28 @@ def predict_from_path(anon_or_path: str, *, from_wav: bool = True, bundle: dict 
     return classify_features(feats, bundle)
 
 
+def _need_acoustic(bundle: dict) -> bool:
+    if bundle.get("with_acoustic"):
+        return True
+    return bool(bundle.get("tiebreak") and bundle.get("acoustic_model"))
+
+
+def _classify_clip(
+    audio: np.ndarray,
+    sr: int,
+    bundle: dict,
+    transcript: dict | None,
+) -> dict:
+    feats, _ = features_from_audio(
+        audio,
+        sr,
+        transcript=transcript,
+        with_semantic=bool(bundle.get("with_semantic")),
+        with_acoustic=_need_acoustic(bundle),
+    )
+    return classify_features(feats, bundle)
+
+
 def _predict_audio(
     audio: np.ndarray,
     sr: int,
@@ -93,15 +115,22 @@ def _predict_audio(
             transcript = transcribe_audio(audio, sr)
         except Exception:
             transcript = None
-    need_acoustic = bool(bundle.get("with_acoustic") or bundle.get("acoustic_model"))
-    feats, _ = features_from_audio(
-        audio,
-        sr,
-        transcript=transcript,
-        with_semantic=bool(bundle.get("with_semantic")),
-        with_acoustic=need_acoustic,
-    )
-    return classify_features(feats, bundle)
+
+    early_s = float(bundle.get("early_exit_s", 90.0))
+    early_lo = float(bundle.get("early_exit_lo", 0.05))
+    early_hi = float(bundle.get("early_exit_hi", 0.95))
+    n_early = int(early_s * sr)
+    use_early = bool(bundle.get("early_exit", True)) and audio.shape[0] > n_early + sr
+    if use_early:
+        prefix = _classify_clip(audio[:n_early], sr, bundle, transcript)
+        p = float(prefix["p_synthetic"])
+        if p <= early_lo or p >= early_hi:
+            prefix["early_exit"] = True
+            return prefix
+
+    result = _classify_clip(audio, sr, bundle, transcript)
+    result["early_exit"] = False
+    return result
 
 
 def main() -> None:
