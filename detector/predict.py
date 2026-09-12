@@ -23,17 +23,34 @@ def _confidence(p_synth: float, is_synthetic: bool) -> float:
     return float(p if is_synthetic else 1.0 - p)
 
 
+def _model_p(model, feat_dict: dict[str, float], names: list[str]) -> float:
+    x = vectorize(feat_dict, names).reshape(1, -1)
+    return float(model.predict_proba(x)[0, 1])
+
+
 def classify_features(feat_dict: dict[str, float], bundle: dict | None = None) -> dict:
     bundle = bundle or load_bundle()
-    names = bundle["feature_names"]
-    x = vectorize(feat_dict, names).reshape(1, -1)
-    model = bundle["model"]
-    p_synth = float(model.predict_proba(x)[0, 1])
+    p_synth = _model_p(bundle["model"], feat_dict, bundle["feature_names"])
+    p_dialogue = p_synth
+    p_acoustic = None
+    used_tiebreak = False
+    ac_model = bundle.get("acoustic_model")
+    ac_names = bundle.get("acoustic_feature_names") or []
+    if ac_model is not None and bundle.get("tiebreak") and ac_names and all(n in feat_dict for n in ac_names):
+        p_acoustic = _model_p(ac_model, feat_dict, ac_names)
+        lo = float(bundle.get("tiebreak_lo", 0.35))
+        hi = float(bundle.get("tiebreak_hi", 0.65))
+        if lo <= p_dialogue <= hi:
+            p_synth = 0.5 * p_dialogue + 0.5 * p_acoustic
+            used_tiebreak = True
     is_synthetic = p_synth >= 0.5
     return {
         "is_synthetic": bool(is_synthetic),
         "confidence": round(_confidence(p_synth, is_synthetic), 4),
         "p_synthetic": round(p_synth, 4),
+        "p_dialogue": round(p_dialogue, 4),
+        "p_acoustic": None if p_acoustic is None else round(p_acoustic, 4),
+        "tiebreak": used_tiebreak,
     }
 
 
@@ -76,12 +93,13 @@ def _predict_audio(
             transcript = transcribe_audio(audio, sr)
         except Exception:
             transcript = None
+    need_acoustic = bool(bundle.get("with_acoustic") or bundle.get("acoustic_model"))
     feats, _ = features_from_audio(
         audio,
         sr,
         transcript=transcript,
         with_semantic=bool(bundle.get("with_semantic")),
-        with_acoustic=bool(bundle.get("with_acoustic")),
+        with_acoustic=need_acoustic,
     )
     return classify_features(feats, bundle)
 

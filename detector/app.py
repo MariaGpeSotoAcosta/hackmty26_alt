@@ -11,12 +11,15 @@ from detector.predict import load_bundle, predict_from_wav_bytes
 
 app = FastAPI(title="Altur detector", version="1.0.0")
 _BUNDLE = None
+_MTIME = None
 
 
 def _bundle():
-    global _BUNDLE
-    if _BUNDLE is None:
+    global _BUNDLE, _MTIME
+    mtime = MODEL_PATH.stat().st_mtime if MODEL_PATH.exists() else None
+    if _BUNDLE is None or mtime != _MTIME:
         _BUNDLE = load_bundle()
+        _MTIME = mtime
     return _BUNDLE
 
 
@@ -29,6 +32,7 @@ def health() -> dict[str, Any]:
         "model": str(MODEL_PATH.name) if ready else None,
         "features": bundle.get("feature_names") if ready else [],
         "val_accuracy": bundle.get("val_accuracy") if ready else None,
+        "tiebreak": bundle.get("tiebreak") if ready else False,
     }
 
 

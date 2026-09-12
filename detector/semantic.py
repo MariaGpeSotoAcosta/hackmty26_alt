@@ -15,15 +15,11 @@ SEMANTIC_FEATURES = [
     "caller_chars",
 ]
 
+# Backchannels the TTS/LLM copies ("ajá", "hola", "okay") are not human cues.
 _FILLERS = (
     "este",
     "eee",
-    "eeeeste",
     "mmm",
-    "em",
-    "eh",
-    "pues",
-    "bueno",
     "o sea",
     "la verdad",
 )
@@ -31,32 +27,31 @@ _CASUAL = (
     "oye",
     "qué tal",
     "que tal",
-    "hola",
-    "ajá",
-    "aja",
-    "okey",
-    "okay",
     "a ver",
     "no manches",
     "órale",
     "orale",
 )
+# Bare "no tengo" / "no sé" match "no tengo para pagar" and "no es".
+# Keep only denials of a thing the agent asked for.
 _REFUSALS = (
-    "no tengo",
-    "no se",
-    "no sé",
     "no tengo eso",
-    "no me acuerdo",
-    "no cuento",
-    "no existe",
-    "no entiendo",
+    "no tengo eso no",
+    "eso no lo tengo",
+    "no cuento con eso",
+    "no cuento con",
     "no me suena",
-    "no sé de qué",
-    "no se de que",
-    "cuál es eso",
+    "eso no existe",
+    "no existe eso",
+    "no me acuerdo de eso",
+    "no me acuerdo de ningun",
+    "no se de que habla",
+    "no se de que me habla",
     "cual es eso",
-    "no manejo",
-    "eso no",
+    "eso no lo manejo",
+    "no manejo eso",
+    "nunca me dieron eso",
+    "no me dieron eso",
 )
 _FORMAL = (
     "por supuesto",
@@ -74,18 +69,18 @@ _FORMAL = (
     "desde luego",
     "afirmativo",
 )
+# Bare "folio" is in almost every agent script. Only unusual asks.
 _TRAPS = (
-    "folio",
     "clabe",
     "nip de",
     "token",
-    "código de verificación que no",
-    "codigo de verificacion que no",
-    "sucursal que no",
-    "número de contrato interno",
-    "numero de contrato interno",
     "clave interbancaria",
+    "contrato interno",
+    "codigo de verificacion",
+    "numero de sucursal",
     "referencia inexistente",
+    "folio interno",
+    "folio que no",
 )
 _REPEATS = (
     "repít",

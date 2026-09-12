@@ -8,16 +8,17 @@ El set de los jueces es speaker-disjoint y puede traer voces/engines nuevos. Por
 
 ## Estado actual
 
-Producción: **VAD sobre el WAV → 21 features de diálogo → logística calibrada**.
+Producción: **VAD → diálogo → logística**. Si `P` está en 0.35–0.65, se promedia con acústica. Sin reglas `if` que fuercen la etiqueta: en este val subían el número, pero la misma forma aparece en la otra clase y no sobreviven un motor nuevo.
 
 | Pipeline | Train | Val (71 callers nuevos) |
 | --- | --- | --- |
-| **Logística (lo que sirve `/detect`)** | 90.8% | **88.7%** (33/37 human, 30/34 synth), AUC 0.975 |
-| HistGradientBoosting (descartado) | 99.6% | 90.1% — memoriza, no va al hidden set |
+| Diálogo solo | 90.8% | 88.7% |
+| **+ desempate acústico** | 91.5% | **91.5%** (6 errores) |
+| HistGradientBoosting (descartado) | 99.6% | 90.1% |
 
-`confidence` es `max(p, 1-p)`: qué tan seguro está del veredicto, no un sello de que acertó. La probabilidad viene de Platt (CV en train).
+`confidence` es `max(p, 1-p)`. La probabilidad viene de Platt (CV en train).
 
-Errores actuales en val (8): `models/val_errors.json`.
+Errores de val (`models/val_errors.json`): `569ffb`, `678ee1`, `6971b2`, `fa26d1` (humanas que parecen bot) y `2d4374`, `b712f5` (bots que el VAD parte o el desempate baja a humano).
 
 ---
 
@@ -74,7 +75,7 @@ Todo el sistema vive en `detector/` más artefactos en `models/`.
 | --- | --- |
 | `dialogue_model.joblib` | Modelo de producción (logística + nombres de features + flags). |
 | `dialogue_features.csv` | Una fila por llamada, para inspeccionar. |
-| `val_errors.json` | Las 8 llamadas de val que hoy falla. |
+| `val_errors.json` | Errores de val del bundle actual. |
 | `transcripts/` | Cache de ASR (se genera; no commitear). |
 | `vosk-model-small-es-0.42/` | Modelo ASR (se descarga; no commitear). |
 
@@ -103,7 +104,7 @@ python -m detector.train --from-wav
 python -m uvicorn detector.app:app --host 127.0.0.1 --port 8000
 ```
 
-Si 8000 está ocupado, usa `--port 8001`. Confirma que `/health` traiga `"model": "dialogue_model.joblib"` y `"val_accuracy": 0.887…`. Si solo ves `{"status":"ok"}`, es **otro** proceso en ese puerto.
+Si 8000 está ocupado, usa `--port 8001`. Confirma que `/health` traiga `"model": "dialogue_model.joblib"` y `"val_accuracy"` cerca de `0.915`. Si solo ves `{"status":"ok"}`, es **otro** proceso en ese puerto.
 
 ### API (lo que evalúan)
 
@@ -162,9 +163,7 @@ tar -xf models/vosk-model-small-es-0.42.zip -C models
 ## Qué falta
 
 1. **Semántica en producción.** El código está (`semantic.py`, `transcribe.py`). Falta transcribir el dataset, leer a mano si Vosk small-es entiende “no tengo eso” en 8 kHz, y subir `--with-semantic` **solo si val gana ≥2 puntos**. Si no, se queda para la demo (“aquí el humano se niega; el bot inventa”).
-2. **Acústica como desempate, no como rama.** `acoustic.py` existe. Meterla en *todas* las llamadas puede pelear con el diálogo. El plan es usarla solo si `confidence` está en ~0.50–0.65.
-3. **Early-exit / latencia.** Criterio de los jueces. Hoy se procesa la llamada entera (~150 s). Falta decidir a los 30–45 s si la confianza ya es alta.
-4. **Auditoría de las 8 de val.** ¿VAD roto o el clasificador? Si varias son umbral de VAD, se gana más ahí que sumando features.
-5. **Un solo servidor.** En esta máquina el 8000 a veces es otra API. Para el juicio: un uvicorn, `/health` con `dialogue_model.joblib`.
-6. **Demo de 15 min.** Lado a lado: humana que pisa al agente / sintética que espera 4 s / pregunta fantasma. El benchmark corre el número; nosotros vendemos la señal.
+2. **Early-exit / latencia.** Criterio de los jueces. Hoy se procesa la llamada entera (~150 s). Falta decidir a los 30–45 s si la confianza ya es alta.
+3. **Un solo servidor.** En esta máquina el 8000 a veces es otra API. Para el juicio: un uvicorn, `/health` con `dialogue_model.joblib`.
+4. **Demo de 15 min.** Lado a lado: humana que pisa al agente / sintética que espera 4 s / pregunta fantasma. El benchmark corre el número; nosotros vendemos la señal.
 

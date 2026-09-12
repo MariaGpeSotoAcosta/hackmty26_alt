@@ -24,6 +24,7 @@ from detector.features import (
 )
 from detector.io_wav import load_wav_path
 from detector.paths import FEATURES_CSV, MANIFEST, MODEL_PATH, MODELS_DIR, audio_path, turns_path
+from detector.predict import classify_features
 from detector.semantic import SEMANTIC_FEATURES
 from detector.transcribe import load_transcript
 
@@ -40,12 +41,15 @@ def feature_names(with_semantic: bool, with_acoustic: bool) -> list[str]:
 def extract_dataset(from_wav: bool, with_semantic: bool, with_acoustic: bool) -> pd.DataFrame:
     df = pd.read_csv(MANIFEST)
     rows: list[dict] = []
+    # Always pull acoustic columns on WAV so we can train a grey-zone tiebreaker
+    # without putting those features in the main dialogue model.
+    extract_acoustic = from_wav or with_acoustic
     for i, row in df.iterrows():
         anon_id = row["anon_id"]
         transcript = load_transcript(anon_id) if with_semantic else None
         wav = audio_path(anon_id)
         audio = sr = None
-        if from_wav or with_acoustic:
+        if from_wav or extract_acoustic:
             if not wav.exists():
                 print(f"skip missing audio {anon_id}")
                 continue
@@ -55,7 +59,7 @@ def extract_dataset(from_wav: bool, with_semantic: bool, with_acoustic: bool) ->
                 sr,
                 transcript=transcript,
                 with_semantic=with_semantic,
-                with_acoustic=with_acoustic,
+                with_acoustic=extract_acoustic,
             )
         else:
             tpath = turns_path(anon_id)
@@ -165,12 +169,55 @@ def train(from_wav: bool, with_semantic: bool, with_acoustic: bool) -> Path:
         "model_name": best_name,
         "val_accuracy": val_acc,
         "train_accuracy": train_acc,
+        "tiebreak": False,
     }
+    _attach_acoustic_tiebreak(bundle, frame, val_acc)
     joblib.dump(bundle, MODEL_PATH)
     print("wrote", MODEL_PATH)
     _print_logreg_weights(best_model, names)
-    _dump_error_ids(frame, names, best_model)
+    _dump_error_ids(frame, bundle)
     return MODEL_PATH
+
+
+def _attach_acoustic_tiebreak(bundle: dict, frame: pd.DataFrame, dialogue_val: float) -> None:
+    if not all(col in frame.columns for col in ACOUSTIC_FEATURES):
+        return
+    x_train, y_train = _split_xy(frame, ACOUSTIC_FEATURES, "train")
+    x_val, y_val = _split_xy(frame, ACOUSTIC_FEATURES, "val")
+    ac_model = _logreg()
+    ac_model.fit(x_train, y_train)
+    ac_val = _report("acoustic-only VAL", y_val, _proba(ac_model, x_val))
+
+    lo, hi = 0.35, 0.65
+    trial = dict(bundle)
+    trial["acoustic_model"] = ac_model
+    trial["acoustic_feature_names"] = list(ACOUSTIC_FEATURES)
+    trial["tiebreak"] = True
+    trial["tiebreak_lo"] = lo
+    trial["tiebreak_hi"] = hi
+    y_true, y_hat, n_flip = [], [], 0
+    val = frame[frame["split"] == "val"]
+    for row in val.to_dict(orient="records"):
+        gold = row["label"] == "synthetic"
+        off = classify_features(row, {**trial, "tiebreak": False})
+        on = classify_features(row, trial)
+        y_true.append(gold)
+        y_hat.append(on["is_synthetic"])
+        if off["is_synthetic"] != on["is_synthetic"]:
+            n_flip += 1
+    blend_acc = float(np.mean(np.array(y_true) == np.array(y_hat)))
+    print(f"\ntiebreak VAL acc={blend_acc:.3f}  dialogue={dialogue_val:.3f}  acoustic={ac_val:.3f}  flipped={n_flip}")
+    bundle["acoustic_model"] = ac_model
+    bundle["acoustic_feature_names"] = list(ACOUSTIC_FEATURES)
+    bundle["tiebreak_lo"] = lo
+    bundle["tiebreak_hi"] = hi
+    if blend_acc >= dialogue_val:
+        bundle["tiebreak"] = True
+        bundle["val_accuracy"] = blend_acc
+        print("enabled acoustic tiebreak on grey-zone dialogue scores")
+    else:
+        bundle["tiebreak"] = False
+        print("disabled acoustic tiebreak: it did not beat dialogue-only val")
 
 
 def _print_logreg_weights(model, names: list[str]) -> None:
@@ -199,13 +246,16 @@ def _proba(model, x: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-scores))
 
 
-def _dump_error_ids(frame: pd.DataFrame, names: list[str], model) -> None:
-    val = frame[frame["split"] == "val"].copy()
-    x, y = _split_xy(val, names, "val")
-    pred = (_proba(model, x) >= 0.5).astype(int)
-    wrong = val.loc[pred != y, ["anon_id", "label"]]
+def _dump_error_ids(frame: pd.DataFrame, bundle: dict) -> None:
+    val = frame[frame["split"] == "val"]
+    wrong = []
+    for row in val.to_dict(orient="records"):
+        out = classify_features(row, bundle)
+        gold = row["label"] == "synthetic"
+        if out["is_synthetic"] != gold:
+            wrong.append({"anon_id": row["anon_id"], "label": row["label"]})
     path = MODELS_DIR / "val_errors.json"
-    path.write_text(json.dumps(wrong.to_dict(orient="records"), indent=2), encoding="utf-8")
+    path.write_text(json.dumps(wrong, indent=2), encoding="utf-8")
     print(f"val errors ({len(wrong)}): {path}")
 
 
