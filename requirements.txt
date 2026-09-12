@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-multipart
+numpy
+pandas
+scikit-learn
+joblib
+scipy
+# optional ASR for --with-semantic
+# vosk

@@ -1,3 +1,11 @@
 audio/
 *.zip
 .DS_Store
+__pycache__/
+*.pyc
+.venv/
+venv/
+models/transcripts/
+models/vosk-model*/
+*.npy
+modelo_entrenado.pkl
