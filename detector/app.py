@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
-from fastapi import FastAPI, File, Request, UploadFile
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from detector.paths import MODEL_PATH
@@ -70,17 +71,56 @@ def _extract_payload(body: bytes, content_type: str) -> bytes | None:
     return body
 
 
-@app.post("/detect")
-async def detect(request: Request) -> JSONResponse:
-    body = await request.body()
-    content_type = request.headers.get("content-type", "")
-    data = _extract_payload(body, content_type)
-    if data is None:
+async def _file_from_form(request: Request) -> bytes | None:
+    form = await request.form()
+    for key in ("file", "audio", "wav", "clip", "upload"):
+        item = form.get(key)
+        if item is not None and hasattr(item, "read"):
+            data = await item.read()
+            if data:
+                return data
+    for item in form.values():
+        if hasattr(item, "read"):
+            data = await item.read()
+            if data:
+                return data
+    return None
+
+
+async def _verdict_response(data: bytes | None) -> JSONResponse:
+    if not data:
         return JSONResponse(_fallback())
-    return JSONResponse(_verdict_from_bytes(data))
+    return JSONResponse(await asyncio.to_thread(_verdict_from_bytes, data))
 
 
-@app.post("/detect/upload")
-async def detect_upload(file: UploadFile = File(...)) -> JSONResponse:
-    data = await file.read()
-    return JSONResponse(_verdict_from_bytes(data))
+@app.post(
+    "/detect",
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "multipart/form-data": {
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "file": {"type": "string", "format": "binary"},
+                        },
+                    }
+                },
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "properties": {"audio_base64": {"type": "string"}},
+                    }
+                },
+                "application/octet-stream": {"schema": {"type": "string", "format": "binary"}},
+            },
+        }
+    },
+)
+async def detect(request: Request) -> JSONResponse:
+    content_type = request.headers.get("content-type", "")
+    if "multipart/form-data" in content_type:
+        return await _verdict_response(await _file_from_form(request))
+    body = await request.body()
+    return await _verdict_response(_extract_payload(body, content_type))
