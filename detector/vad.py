@@ -9,6 +9,12 @@ ABS_THR = 0.005
 REL_K = 4.5
 HANGOVER_FRAMES = 4
 
+# Tuned per channel via grid search against turns/*.json (see ANALISIS_Y_MEJORAS.md).
+# Caller has more hesitation/silence than the agent, so a higher relative
+# threshold and shorter hangover measure it more accurately.
+CHANNEL_REL_K = {0: 6.0, 1: 8.0}
+CHANNEL_HANGOVER_FRAMES = {0: 2, 1: 2}
+
 
 def vad_channel(
     samples: np.ndarray,
@@ -74,7 +80,13 @@ def turns_from_audio(audio: np.ndarray, sr: int) -> list[dict]:
         audio = np.column_stack([audio, audio])
     turns: list[dict] = []
     for channel in (0, 1):
-        for seg in vad_channel(audio[:, channel], sr):
+        seg_iter = vad_channel(
+            audio[:, channel],
+            sr,
+            rel_k=CHANNEL_REL_K[channel],
+            hangover_frames=CHANNEL_HANGOVER_FRAMES[channel],
+        )
+        for seg in seg_iter:
             turns.append({"channel": channel, **seg})
     turns.sort(key=lambda t: (t["start"], t["channel"]))
     return turns
