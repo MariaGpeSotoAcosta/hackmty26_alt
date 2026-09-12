@@ -1,178 +1,154 @@
-# Detector Altur — implementación
+# Detector Altur
 
-Clasifica si el **caller** (canal 0) de una llamada bancaria es **humano** o **sintético** (ASR + LLM + voz). El canal 1 es el agente del banco.
+Clasifica si el **caller** (canal 0) de una llamada bancaria en español mexicano es **humano** o **sintético**. El caller sintético es una pila ASR + modelo de lenguaje + voz. El canal 1 es el agente del banco.
 
-El set de los jueces es speaker-disjoint y puede traer voces/engines nuevos. Por eso el núcleo **no** es un clasificador de timbre: es **cómo conversa** el caller (latencia, interrupciones, silencio, regularidad de turnos). El PDF del reto pide originalidad más allá de un clasificador de audio de estantería, y profundidad en una señal bien hecha.
-
----
-
-## Estado actual
-
-Producción: **VAD → diálogo → logística**. El train ve dos cortes de la misma llamada (VAD + `turns/` oficiales); val y `/detect` solo VAD. El desempate acústico se apagó: bajaba val. En `/detect`, si a los 90 s `P` ya está ≤0.05 o ≥0.95, se responde sin esperar el resto (cortes más agresivos bajaban val). No se calcula acústica ni ASR.
-
-| Pipeline | Train (VAD) | Val VAD (71) |
-| --- | --- | --- |
-| Diálogo, solo VAD | 90.8% | 88.7% |
-| + desempate acústico | 91.5% | 91.5% (6 errores) |
-| **+ dual-view (VAD + turns en train)** | **90.4%** (255/282, no 99%) | **93.0%** CSV (5 errores) |
-| HistGradientBoosting (descartado) | ~99% | 95.8% (overfit) |
-
-`confidence` es `max(p, 1-p)`. La probabilidad viene de Platt (CV en train).
-
-Errores de val en el camino de `/detect` (`models/val_errors.json`): `569ffb`, `678ee1`, `6971b2` (humanas) y `6058d9` (sintético). Un early-exit a 45 s con umbrales flojos bajaba val a 84%; por eso son 90 s y 0.05/0.95.
-
----
-
-## Cómo funciona
+La decisión no usa el timbre ni el texto. Usa **cómo se engancha el caller con el agente**: cuánto espera, qué tan largos y regulares son sus turnos, si corta al agente, si hablan a la vez, y qué hace cuando el otro se calla. Eso es independiente de qué motor de voz produzca el canal 0.
 
 ```
 WAV estéreo 8 kHz
-    → (opcional) primeros 90 s → VAD → logística
-    → si P ≤ 0.05 o P ≥ 0.95: responder
-    → si no: llamada entera → VAD → logística
-    → {"is_synthetic": true, "confidence": 0.87}
-```
-
-El juez **no manda** `turns/*.json`. Esos JSON solo sirven en desarrollo. En inferencia reconstruimos los turnos con VAD. El modelo de producción se entrenó **con ese mismo VAD** (`--from-wav`) para no tener desajuste train/serve.
-
-IoU del VAD vs turns oficiales: ~0.90 en caller, ~0.96 en agente.
-
-Señales que más empujan a *synthetic*: latencia mediana/media alta, turnos del caller más largos. A *human*: latencia irregular (`lat_std`) y más habla del agente. En el dataset, humanas contestan ~2 s e interrumpen más; sintéticos esperan ~3–5 s (ASR+LLM) y son más regulares.
-
-Semántica (Vosk) existe en código pero **no** entra a `/detect`. El endpoint no corre ASR. La acústica no se calcula: el desempate está apagado.
-
-Si el WAV no se puede leer: `is_synthetic: true`, `confidence: 0.52` (nunca 500).
-
----
-
-## Archivos nuevos
-
-Todo el sistema vive en `detector/` más artefactos en `models/`.
-
-### Paquete `detector/`
-
-| Archivo | Qué hace |
-| --- | --- |
-| `paths.py` | Rutas: `manifest.csv`, `turns/`, `audio/`, `models/`. Busca el audio también en un zip hermano si no está en la raíz. |
-| `io_wav.py` | Lee WAV 8 kHz estéreo desde path, bytes o base64 (`RIFF` o JSON). Normaliza a float32, 2 canales. |
-| `vad.py` | VAD por energía, 20 ms, hangover, merge 0.3 s, mínimo 0.2 s. `turns_from_audio` arma la lista `{channel, start, end}`. |
-| `features.py` | Features de diálogo + `extract_all_features` (une semántica/acústica si se piden). `features_from_audio` = VAD + features. |
-| `acoustic.py` | Features baratas solo del caller voiced: ZCR, flatness, centroide, CV de RMS, std de F0. **No está en el modelo actual.** |
-| `semantic.py` | Features de texto: muletillas, rechazos (“no tengo eso”), formalidad tipo LLM, trampas del agente, dígitos. **No está en el modelo actual.** |
-| `transcribe.py` | ASR por canal con **Vosk** (español). Whisper se cae en Python 3.14 / Windows. |
-| `transcribe_dataset.py` | Recorre el manifest, transcribe y cachea `models/transcripts/<anon_id>.json`. |
-| `train.py` | Extrae features en **train**, mide en **val**. Flags: `--from-wav`, `--with-semantic`, `--with-acoustic`. Elige logística salvo que un árbol gane ≥3 pts en val **y** no overfittee. Guarda el `.joblib` y `val_errors.json`. |
-| `predict.py` | Carga el bundle y clasifica desde WAV o desde turns oficiales (`--turns`, solo debug). |
-| `app.py` | FastAPI: `POST /detect` (jueces), `POST /detect/upload` (Swagger), `GET /health`. |
-| `test_endpoint.py` | Prueba `/detect` sin pegar base64: lee el WAV local y lo manda como JSON. |
-| `eval_vad.py` | IoU del VAD vs turns oficiales + accuracy en val con el modelo guardado. |
-| `__init__.py` | Marca el directorio como paquete. |
-| `README.md` | Este documento. |
-
-### Artefactos en `models/`
-
-| Archivo | Qué es |
-| --- | --- |
-| `dialogue_model.joblib` | Modelo de producción (logística + nombres de features + flags). |
-| `dialogue_features.csv` | Una fila por llamada, para inspeccionar. |
-| `val_errors.json` | Errores de val del bundle actual. |
-| `transcripts/` | Cache de ASR (se genera; no commitear). |
-| `vosk-model-small-es-0.42/` | Modelo ASR (se descarga; no commitear). |
-
-`requirements.txt` lista dependencias. `.gitignore` excluye `audio/`, zips, Vosk, transcripciones y `__pycache__`.
-
----
-
-## Features de diálogo (las que sí usa el modelo)
-
-Del timing caller (0) vs agente (1):
-
-- `barge_in` / `barge_rate` — el caller empieza mientras el agente habla
-- `overlap_s` / `overlap_rate` — segundos a la vez
-- `lat_mean`, `lat_med`, `lat_p90`, `lat_std`, `first_latency` — demora en contestar
-- `n_caller`, `n_agent`, `turn_caller_mean` / `std` / `cv` — cuántos turnos y qué tan largos/regulares
-- `silence_fill` / `silence_fill_rate` — el caller vuelve a hablar si el agente no responde
-- `caller_speech_ratio`, `agent_speech_ratio`, `caller_gap_mean`, `duration_s`
-
----
-
-## Cómo correrlo
-
-```powershell
-python -m pip install -r requirements.txt
-python -m detector.train --from-wav --dual-view
-python -m uvicorn detector.app:app --host 127.0.0.1 --port 8000
-```
-
-Si 8000 está ocupado, mata el `python` que lo tiene y no lances un segundo. `/health` del bundle congelado:
-
-```json
-{"ok": true, "model": "dialogue_model.joblib", "val_accuracy": 0.929…, "tiebreak": false, "early_exit": true}
-```
-
-Si solo ves `{"status":"ok"}`, es **otro** proceso. No reentrenar para el juicio. Si hace falta: `--from-wav --dual-view --reuse-csv`.
-
-### API (lo que evalúan)
-
-| Ruta | Para quién |
-| --- | --- |
-| `POST /detect` | Jueces. JSON `{"audio_base64":"<wav>"}`, o el WAV crudo (`RIFF...`). También acepta campos `audio`, `wav`, `clip`. |
-| `POST /detect/upload` | Nosotros. En [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) (o `:8001/docs`): **Try it out → Choose File**. Un WAV de 5 MB no se pega en `/detect`. |
-| `GET /health` | ¿Está vivo el modelo bueno? |
-
-Respuesta:
-
-```json
-{"is_synthetic": true, "confidence": 0.87}
-```
-
-Probar el **mismo** `POST /detect` de los jueces, sin Swagger:
-
-```powershell
-python -m detector.test_endpoint call_0e1e2f29bfdc
-python -m detector.test_endpoint call_4d8129939686
-```
-
-| ID | Rol en demo | Manifest | `/detect` (este joblib) |
-| --- | --- | --- | --- |
-| `call_0e1e2f29bfdc` | humana que encaja | human, val | `false` ~0.95 |
-| `call_4d8129939686` | bot que espera | synthetic, train | `true` ~1.00 |
-| `call_2d4374d86df7` | VAD lo parte; latencia 13 s | synthetic, val | `true` ~1.00 |
-| `call_6058d9c5c82f` | bot rápido (~2 s); el diálogo falla | synthetic, val | `false` ~0.70 |
-
-Clasificar sin HTTP: `python -m detector.predict call_0e1e2f29bfdc --wav`.
-
-### Variantes (no son producción hasta que val mejore)
-
-```powershell
-python -m detector.eval_vad
-python -m detector.transcribe_dataset
-python -m detector.train --from-wav --with-semantic
-python -m detector.train --from-wav --with-acoustic
-```
-
-Vosk (solo semántica), si falta:
-
-```powershell
-curl -L -o models/vosk-model-small-es-0.42.zip https://alphacephei.com/vosk/models/vosk-model-small-es-0.42.zip
-tar -xf models/vosk-model-small-es-0.42.zip -C models
+    → decodificar a dos canales float32
+    → VAD de energía por canal
+    → 21 features de diálogo
+    → logística calibrada (p = P(sintético))
+    → is_synthetic = (p ≥ 0.5)
+    → confidence = max(p, 1 − p)
 ```
 
 ---
 
-## Train vs val vs hidden
+## Entrada de audio
 
-- **Train VAD** (282): **90.4%**. Logística, no un árbol al 99%. Dual-view en train no dispara overfit.
-- **Val** (71): ~93% en CSV; con early-exit de serve, 67/71. n=71 es ruido (±6 pts). Dual-view vs el bundle anterior: arregló 2, rompió 1 (`6058`); McNemar no es significativo. **No citar 93% como hidden.**
-- **Hidden**: otras voces/engines. El método es diálogo, no el porcentaje.
+El endpoint `POST /detect` recibe un WAV estéreo 8 kHz: cuerpo `RIFF` crudo, o JSON con el audio en base64 (`audio_base64`, `audio`, `wav` o `clip`). `POST /detect/upload` hace lo mismo con un archivo.
 
-`turns/` solo en train (segunda vista). `/detect` nunca los lee.
+`io_wav` normaliza a `float32` en \([-1, 1]\) y fuerza dos canales. Canal 0 = caller (quien se clasifica). Canal 1 = agente (contexto: a qué está respondiendo el caller).
+
+Si el payload no se puede leer como WAV, la respuesta es `is_synthetic: true` y `confidence: 0.52`.
+
+`turns/*.json` no entra a inferencia. En desarrollo existe como segunda vista de los mismos intervalos `{channel, start, end}`.
 
 ---
 
-## Juicio (modelo congelado)
+## VAD: de muestras a turnos
 
-1. Un uvicorn en 8000. Comprobar `/health` (arriba).
-2. Demo, no más train: humana (`0e1e2f`) / bot lento (`4d8129`) / `2d4374` (arreglado por latencia, no por voz) / `6058d9` (bot a ~2 s; el diálogo se equivoca a propósito, sin `if`).
-3. Semántica y acústica **fuera** del endpoint (lentas o 63% solas). Early-exit ya está: 90 s y solo si `P` ≤0.05 o ≥0.95.
+Cada canal se segmenta por separado. Un turno es un intervalo continuo de habla `{start, end}` en segundos.
 
+1. **RMS por frame.** Se parte el canal en ventanas de 20 ms (160 muestras a 8 kHz). De cada ventana se toma la raíz de la energía media.
+2. **Umbral adaptativo.** El ruido de fondo es la mediana de los frames por debajo del percentil 20 de RMS. El umbral es `max(0.005, ruido × rel_k)`. Todo frame por encima cuenta como habla.
+3. **Hangover.** Tras el último frame de habla se siguen marcando como habla los siguientes `hangover` frames, para no cortar finales de palabra.
+4. **Fusión.** Huecos ≤ 0.3 s entre dos segmentos se unen (una vacilación corta no parte el turno).
+5. **Duración mínima.** Se descartan segmentos de menos de 0.2 s (clicks, ruido).
+
+Caller y agente no comparten `rel_k`. El caller vacila y baja la voz; el agente es más estable y más alto.
+
+| Canal | `rel_k` | Hangover |
+|---|---|---|
+| 0 caller | 6.0 | 2 frames (40 ms) |
+| 1 agente | 8.0 | 2 frames (40 ms) |
+
+Los dos listados se mezclan y se ordenan por `start`. A partir de ahí el audio ya no se usa: solo queda la geometría temporal entre canales.
+
+---
+
+## Cómo se construye cada feature
+
+Hay 21 números. Todas salen de los turnos del caller \(C\) y del agente \(A\). \(T\) es la duración de la llamada.
+
+### Tamaño de la conversación
+
+| Feature | Definición |
+|---|---|
+| `duration_s` | Duración del WAV, \(T\). |
+| `n_caller` | Número de turnos del caller. |
+| `n_agent` | Número de turnos del agente. |
+| `turn_caller_mean` | Media de las duraciones \(e_i - s_i\) del caller. |
+| `turn_caller_std` | Desviación de esas duraciones. |
+| `turn_caller_cv` | `std / mean` (0 si no hay habla). Regularidad relativa del largo de turno. |
+| `caller_speech_ratio` | Suma de duraciones del caller / \(T\). |
+| `agent_speech_ratio` | Suma de duraciones del agente / \(T\). |
+
+### Latencia de respuesta
+
+Para cada turno del caller se busca el turno del agente que **terminó justo antes** (con 50 ms de holgura). La latencia es `start_caller − end_agente`, recortada a ≥ 0. Un turno que empieza casi encima del agente no aporta latencia (eso es barge-in). Si el caller habla primero y no hay agente previo, ese turno no entra.
+
+| Feature | Definición |
+|---|---|
+| `lat_mean` | Media de esas esperas. |
+| `lat_med` | Mediana. Menos sensible a un solo silencio largo. |
+| `lat_p90` | Percentil 90. La espera larga típica, no la extrema. |
+| `lat_std` | Dispersión de las esperas. |
+| `first_latency` | La primera latencia de la llamada (saludo / primer dato). |
+
+### Interrupciones y overlap
+
+Un **barge-in** del caller es un turno cuyo `start` cae *dentro* de un turno del agente (el agente aún no había terminado, con 50 ms de margen). `agent_barge` es lo simétrico: el agente corta al caller.
+
+| Feature | Definición |
+|---|---|
+| `barge_in` | Conteos de veces que el caller interrumpe. |
+| `barge_rate` | `barge_in / n_caller`. |
+| `agent_barge` | Veces que el agente interrumpe al caller. |
+| `overlap_s` | Segundos en los que ambos canales tienen un turno a la vez (intersección de intervalos). |
+| `overlap_rate` | `overlap_s / T`. |
+
+### Silencios
+
+| Feature | Definición |
+|---|---|
+| `silence_fill` | El caller vuelve a hablar después de ≥ 1.5 s de su propio silencio **y** el agente no metió un turno en ese hueco. Es “rellenar” cuando el otro no retoma. |
+| `silence_fill_rate` | `silence_fill / n_caller`. |
+| `caller_gap_mean` | Media de los huecos entre turnos consecutivos del caller (`start_{i+1} − end_i`, solo si no se solapan). |
+
+---
+
+## Qué separa humano de sintético
+
+El caller sintético no es “una voz rara”. Es un sistema que **oye, piensa y habla** en serie. Eso deja huella en el reloj, no en el espectro.
+
+- **Espera más.** Entre el fin del agente y su respuesta hay cola de ASR + LLM. Humanos del dataset contestan cerca de 2 s; sintéticos suelen irse a 3–5 s. Por eso `lat_med` y `lat_mean` altos empujan a sintético.
+- **Habla en bloques más largos.** El LLM entrega un párrafo; la persona corta, asiente, pregunta. `turn_caller_mean` alto → sintético.
+- **Es más metrónomo.** La misma pila tarda parecido cada turno. Un humano a veces dispara y a veces se queda pensando: `lat_std` alto → humano.
+- **Deja más aire al agente.** Si el caller es un bot que suelta respuestas largas y espera el siguiente prompt, el agente ocupa menos fracción de la llamada. `agent_speech_ratio` alto → humano. `caller_speech_ratio` alto también apunta a humano: la persona se mete más a menudo, no solo en monólogos.
+- **Interrumpe distinto.** El barge-in humano es frecuente e irregular. El bot suele esperar a que el agente termine; cuando el agente lo pisa (`agent_barge`), a veces es porque el bot no cede el canal.
+
+Los pesos de la logística (signo **+** = hacia sintético, tras estandarizar) ordenan así la separación:
+
+| Peso | Feature | Hacia sintético cuando… | Hacia humano cuando… |
+|---|---|---|---|
+| −1.68 | `agent_speech_ratio` | El agente ocupa poco de la llamada | El agente habla una fracción grande |
+| +1.60 | `lat_med` | La espera típica es larga | Contesta pronto |
+| −1.47 | `caller_speech_ratio` | El caller ocupa poco (pocos metidos) | El caller se mete más en el tiempo total |
+| +1.41 | `lat_mean` | La espera promedio es larga | Igual que `lat_med`, media |
+| +1.15 | `turn_caller_mean` | Turnos largos tipo párrafo | Turnos cortos |
+| +0.74 | `turn_caller_std` | Largos muy variables *y* ya controlando la media | Turnos de tamaño parecido y cortos |
+| −0.63 | `lat_std` | Esperas casi iguales (reloj de pila) | Esperas irregulares |
+| −0.53 | `lat_p90` | (residual: con media/mediana altas, un p90 extra no suma bot) | Cola de esperas muy desigual |
+| −0.52 | `duration_s` | Llamadas más cortas | Llamadas más largas |
+| +0.51 | `barge_rate` | Interrumpe una fracción alta de *sus* turnos, en el patrón del bot | — |
+| −0.45 | `overlap_s` | Poco habla a la vez | Más solape |
+| +0.44 | `agent_barge` | El agente lo pisa seguido | El caller cede menos de esa forma |
+
+Las que **más separan** son las tres primeras: fracción de habla del agente, mediana de latencia, y fracción de habla del caller. El resto afina regularidad e interrupciones. `n_caller`, `n_agent`, `turn_caller_cv`, `first_latency`, `barge_in` crudo, `overlap_rate` y los silence-fills pesan menos; el modelo las tiene porque describen la misma geometría, no porque cada una corte sola.
+
+Hay callers humanos muy pacientes (latencia alta, casi sin barge-in) y bots con pila rápida (latencia ~2 s). Esos se parecen en este espacio y el modelo los puede cruzar.
+
+---
+
+## Clasificador
+
+Las 21 features se estandarizan (`StandardScaler`) y entran a una **regresión logística** (`C=0.4`, clases balanceadas, `lbfgs`). Encima hay **calibración sigmoide** (Platt, 3 folds sobre train): el número que sale es una probabilidad, no solo un score lineal.
+
+- `p ≥ 0.5` → `is_synthetic: true`
+- `confidence = p` si es sintético, `1 − p` si es humano
+
+Se usa logística y no un boosting de árboles: la frontera es una combinación de timings, no una memorización de callers.
+
+### Dual-view en train
+
+Cada llamada de **train** entra dos veces, misma etiqueta:
+
+1. Features del VAD sobre el WAV (la vista de inferencia).
+2. Features de los intervalos oficiales en `turns/` (la misma conversación, segmentada sin el error del VAD).
+
+Val e inferencia usan **solo** la vista VAD. El JSON oficial enseña al modelo la geometría “limpia” de la conversación; el VAD le enseña la geometría ruidosa que va a ver siempre. Las dos vistas son el mismo fenómeno (timing), no un segundo sensor (voz o texto).
+
+El artefacto es `models/dialogue_model.joblib`: pipeline, nombres de las 21 features y el corte en 0.5.

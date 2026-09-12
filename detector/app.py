@@ -34,6 +34,7 @@ def health() -> dict[str, Any]:
         "val_accuracy": bundle.get("val_accuracy") if ready else None,
         "tiebreak": bundle.get("tiebreak") if ready else False,
         "early_exit": bundle.get("early_exit", False) if ready else False,
+        "with_semantic": bundle.get("with_semantic") if ready else False,
     }
 
 

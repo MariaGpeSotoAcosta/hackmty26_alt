@@ -57,7 +57,8 @@ def classify_features(feat_dict: dict[str, float], bundle: dict | None = None) -
 def predict_from_wav_bytes(data: bytes, bundle: dict | None = None) -> dict:
     bundle = bundle or load_bundle()
     audio, sr = load_wav_bytes(data)
-    return _predict_audio(audio, sr, bundle, transcript=None, run_asr=False)
+    run_asr = bool(bundle.get("with_semantic"))
+    return _predict_audio(audio, sr, bundle, transcript=None, run_asr=run_asr)
 
 
 def predict_from_path(anon_or_path: str, *, from_wav: bool = True, bundle: dict | None = None) -> dict:
