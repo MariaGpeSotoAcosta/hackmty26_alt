@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Altur detector — dashboard</title>
+<style>
+  :root {
+    --bg: #0b0d12; --panel: #12151c; --border: #232733; --text: #e6e9ef;
+    --muted: #8b93a7; --human: #4fb0ff; --synth: #ff6b6b; --accent: #7c5cff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px; background: var(--bg); color: var(--text);
+         font: 14px/1.5 -apple-system, Segoe UI, Roboto, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+           gap: 12px; margin-bottom: 24px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+          padding: 14px 16px; }
+  .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase;
+                 letter-spacing: .04em; }
+  .card .value { font-size: 26px; font-weight: 600; margin-top: 4px; }
+  .grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 16px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+           padding: 16px; overflow: auto; }
+  .panel h2 { font-size: 14px; margin: 0 0 12px; color: var(--muted); font-weight: 600;
+              text-transform: uppercase; letter-spacing: .04em; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  .badge { padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .badge.human { background: rgba(79,176,255,.15); color: var(--human); }
+  .badge.synth { background: rgba(255,107,107,.15); color: var(--synth); }
+  .bar-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; cursor: pointer; }
+  .bar-track { flex: 1; height: 22px; background: #1a1e28; border-radius: 4px; overflow: hidden; position: relative; }
+  .bar-fill { height: 100%; border-radius: 4px; }
+  .bar-fill.pos { background: var(--synth); }
+  .bar-fill.neg { background: var(--human); }
+  .bar-label { width: 170px; font-size: 12px; color: var(--muted); flex-shrink: 0; }
+  .bar-value { width: 60px; text-align: right; font-size: 12px; color: var(--muted); flex-shrink: 0; }
+  .timeline { display: flex; align-items: flex-end; gap: 2px; height: 80px; margin-top: 8px; }
+  .timeline .col { flex: 1; background: var(--accent); border-radius: 2px 2px 0 0; min-height: 2px; }
+  .empty { color: var(--muted); padding: 24px; text-align: center; }
+  .row-click { cursor: pointer; }
+  .row-click:hover { background: rgba(255,255,255,.03); }
+  #explain-panel { margin-top: 16px; }
+</style>
+</head>
+<body>
+  <h1>Altur detector — llamadas en vivo</h1>
+  <p class="sub">Cada verdicto de <code>/detect</code>, por qué lo decidió, y latencia. Se actualiza cada 5s.</p>
+
+  <div class="cards" id="cards"></div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>Llamadas recientes</h2>
+      <table id="calls-table">
+        <thead><tr><th>Hora</th><th>Veredicto</th><th>Confianza</th><th>Latencia</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div id="explain-panel"></div>
+    </div>
+    <div class="panel">
+      <h2>Volumen por minuto</h2>
+      <div class="timeline" id="timeline"></div>
+      <h2 style="margin-top:20px">Confianza promedio en el tiempo</h2>
+      <div class="timeline" id="timeline-conf"></div>
+    </div>
+  </div>
+
+  <script>
+    let lastData = null;
+
+    function fmtPct(x) { return x == null ? '—' : (x * 100).toFixed(1) + '%'; }
+    function fmtMs(x) { return x == null ? '—' : x.toFixed(0) + ' ms'; }
+
+    function renderCards(stats) {
+      const cards = [
+        { label: 'Llamadas (últimas 4h)', value: stats.total ?? 0 },
+        { label: '% sintéticas', value: stats.total ? fmtPct(stats.n_synthetic / stats.total) : '—' },
+        { label: 'Confianza media', value: fmtPct(stats.avg_confidence) },
+        { label: 'Latencia media', value: fmtMs(stats.avg_latency_ms) },
+        { label: 'Latencia p95', value: fmtMs(stats.p95_latency_ms) },
+      ];
+      document.getElementById('cards').innerHTML = cards.map(c =>
+        `<div class="card"><div class="label">${c.label}</div><div class="value">${c.value}</div></div>`
+      ).join('');
+    }
+
+    function renderTimeline(elId, timeline, key, fmt) {
+      const el = document.getElementById(elId);
+      if (!timeline || !timeline.length) { el.innerHTML = '<div class="empty">sin datos</div>'; return; }
+      const vals = timeline.map(t => t[key] ?? 0);
+      const max = Math.max(...vals, 1);
+      el.innerHTML = timeline.map(t => {
+        const v = t[key] ?? 0;
+        const h = Math.max(2, (v / max) * 100);
+        return `<div class="col" style="height:${h}%" title="${new Date(t.time).toLocaleTimeString()} — ${fmt(v)}"></div>`;
+      }).join('');
+    }
+
+    function renderCalls(rows) {
+      const tbody = document.querySelector('#calls-table tbody');
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="4" class="empty">Todavía no hay llamadas registradas</td></tr>';
+        return;
+      }
+      tbody.innerHTML = rows.map((r, i) => {
+        const badge = r.is_synthetic ? 'synth' : 'human';
+        const label = r.is_synthetic ? 'sintético' : 'humano';
+        const time = new Date(r.time).toLocaleTimeString();
+        return `<tr class="row-click" onclick="showExplain(${i})">
+          <td>${time}</td>
+          <td><span class="badge ${badge}">${label}</span></td>
+          <td>${fmtPct(r.confidence)}</td>
+          <td>${fmtMs(r.latency_ms)}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function showExplain(i) {
+      const row = lastData.recent[i];
+      const panel = document.getElementById('explain-panel');
+      if (!row.contributions) {
+        panel.innerHTML = '<div class="empty">Sin desglose de features para esta llamada</div>';
+        return;
+      }
+      const maxAbs = Math.max(...row.contributions.map(c => Math.abs(c.contribution)), 0.01);
+      panel.innerHTML = '<h2>Por qué decidió esto</h2>' + row.contributions.slice(0, 10).map(c => {
+        const pct = (Math.abs(c.contribution) / maxAbs) * 100;
+        const cls = c.contribution >= 0 ? 'pos' : 'neg';
+        return `<div class="bar-row">
+          <div class="bar-label">${c.feature}</div>
+          <div class="bar-track"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>
+          <div class="bar-value">${c.contribution.toFixed(2)}</div>
+        </div>`;
+      }).join('') + '<p class="sub" style="margin-top:8px">Rojo empuja a sintético, azul a humano. Barra = tamaño del empujón (peso × valor estandarizado).</p>';
+    }
+
+    async function refresh() {
+      try {
+        const res = await fetch('/dashboard/data');
+        const data = await res.json();
+        lastData = data;
+        if (!data.enabled) {
+          document.getElementById('cards').innerHTML =
+            '<div class="card"><div class="label">Estado</div><div class="value" style="font-size:16px">Tiger Data no configurado (TIGER_DATA_URL)</div></div>';
+          return;
+        }
+        renderCards(data.stats);
+        renderTimeline('timeline', data.stats.timeline, 'count', v => v + ' llamadas');
+        renderTimeline('timeline-conf', data.stats.timeline, 'avg_confidence', fmtPct);
+        renderCalls(data.recent);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>

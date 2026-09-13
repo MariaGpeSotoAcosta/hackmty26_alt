@@ -51,6 +51,7 @@ def classify_features(feat_dict: dict[str, float], bundle: dict | None = None) -
         "p_dialogue": round(p_dialogue, 4),
         "p_acoustic": None if p_acoustic is None else round(p_acoustic, 4),
         "tiebreak": used_tiebreak,
+        "features": dict(feat_dict),
     }
 
 

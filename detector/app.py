@@ -3,11 +3,16 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
+import uuid
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
+from detector import logging_db
+from detector.explain import explain
 from detector.paths import MODEL_PATH
 from detector.predict import load_bundle, predict_from_wav_bytes
 
@@ -45,12 +50,21 @@ def _fallback() -> dict[str, Any]:
     return {"is_synthetic": True, "confidence": 0.52}
 
 
-def _verdict_from_bytes(data: bytes) -> dict[str, Any]:
+def _verdict_from_bytes(data: bytes, call_id: str | None = None) -> dict[str, Any]:
+    t0 = time.perf_counter()
     try:
-        result = predict_from_wav_bytes(data, _bundle())
+        bundle = _bundle()
+        result = predict_from_wav_bytes(data, bundle)
         conf = float(result["confidence"])
         if conf < 0.0 or conf > 1.0:
             conf = 0.52
+        latency_ms = (time.perf_counter() - t0) * 1000.0
+        if logging_db.enabled():
+            try:
+                contributions = explain(result.get("features") or {}, bundle)
+            except Exception:
+                contributions = None
+            logging_db.log_call(call_id or str(uuid.uuid4()), result, contributions, latency_ms)
         return {"is_synthetic": bool(result["is_synthetic"]), "confidence": conf}
     except Exception:
         return _fallback()
@@ -65,26 +79,27 @@ def _b64_to_wav(value: str) -> bytes:
     return base64.b64decode(text + ("=" * pad))
 
 
-def _extract_payload(body: bytes, content_type: str) -> bytes | None:
+def _extract_payload(body: bytes, content_type: str) -> tuple[bytes | None, str | None]:
     if not body:
-        return None
+        return None, None
     if body[:4] == b"RIFF":
-        return body
+        return body, None
     if "json" in content_type or body[:1] in (b"{", b"["):
         try:
             payload = json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
-            return body
+            return body, None
         if isinstance(payload, dict):
+            call_id = payload.get("call_id") if isinstance(payload.get("call_id"), str) else None
             for key in ("audio_base64", "audio", "wav", "clip", "data"):
                 value = payload.get(key)
                 if isinstance(value, str) and value:
                     try:
-                        return _b64_to_wav(value)
+                        return _b64_to_wav(value), call_id
                     except Exception:
-                        return None
-        return None
-    return body
+                        return None, None
+        return None, None
+    return body, None
 
 
 async def _file_from_form(request: Request) -> bytes | None:
@@ -103,10 +118,10 @@ async def _file_from_form(request: Request) -> bytes | None:
     return None
 
 
-async def _verdict_response(data: bytes | None) -> JSONResponse:
+async def _verdict_response(data: bytes | None, call_id: str | None = None) -> JSONResponse:
     if not data:
         return JSONResponse(_fallback())
-    return JSONResponse(await asyncio.to_thread(_verdict_from_bytes, data))
+    return JSONResponse(await asyncio.to_thread(_verdict_from_bytes, data, call_id))
 
 
 @app.post(
@@ -145,4 +160,22 @@ async def detect(request: Request) -> JSONResponse:
     if "multipart/form-data" in content_type:
         return await _verdict_response(await _file_from_form(request))
     body = await request.body()
-    return await _verdict_response(_extract_payload(body, content_type))
+    data, call_id = _extract_payload(body, content_type)
+    return await _verdict_response(data, call_id)
+
+
+@app.get("/dashboard/data")
+def dashboard_data() -> dict[str, Any]:
+    return {
+        "enabled": logging_db.enabled(),
+        "stats": logging_db.aggregate_stats() if logging_db.enabled() else {"available": False},
+        "recent": logging_db.recent_calls(limit=30) if logging_db.enabled() else [],
+    }
+
+
+_DASHBOARD_HTML = (Path(__file__).parent / "dashboard.html").read_text(encoding="utf-8")
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard() -> str:
+    return _DASHBOARD_HTML
