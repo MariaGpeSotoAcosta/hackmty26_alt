@@ -9,12 +9,10 @@ down because the dashboard's database had a hiccup.
 """
 
 import os
-import time
 from contextlib import contextmanager
 from typing import Any, Iterator
 
 _DB_URL = os.environ.get("TIGER_DATA_URL")
-_POOL = None
 _SCHEMA_READY = False
 
 _SCHEMA_SQL = """
@@ -38,19 +36,18 @@ def enabled() -> bool:
     return bool(_DB_URL)
 
 
-def _get_pool():
-    global _POOL
-    if _POOL is None:
-        from psycopg_pool import ConnectionPool
-
-        _POOL = ConnectionPool(_DB_URL, min_size=1, max_size=4, kwargs={"autocommit": True})
-    return _POOL
-
-
 @contextmanager
 def _conn() -> Iterator[Any]:
-    pool = _get_pool()
-    with pool.connection() as conn:
+    """A fresh, short-lived connection per call.
+
+    No pooling on purpose: this dashboard is low-traffic, and a plain
+    connect-per-call avoids any chance of a stale/reused connection or
+    cursor carrying state across requests (seen in the wild after the
+    server churned through many restarts).
+    """
+    import psycopg
+
+    with psycopg.connect(_DB_URL, autocommit=True) as conn:
         yield conn
 
 
