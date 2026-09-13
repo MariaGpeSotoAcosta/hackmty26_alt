@@ -11,7 +11,7 @@ to a genuinely new voice.
 This groups the synthetic calls into acoustic-similarity clusters (a proxy
 for "same voice/engine") and holds each cluster out completely during
 training, instead of holding out random rows. Use this before trusting a
-val-accuracy bump from any new feature (see ANALISIS_Y_MEJORAS.md, sec. 4-5).
+val-accuracy bump from any new feature.
 """
 
 import numpy as np

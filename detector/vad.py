@@ -9,7 +9,7 @@ ABS_THR = 0.005
 REL_K = 4.5
 HANGOVER_FRAMES = 4
 
-# Tuned per channel via grid search against turns/*.json (see ANALISIS_Y_MEJORAS.md).
+# Tuned per channel via grid search against turns/*.json.
 # Caller has more hesitation/silence than the agent, so a higher relative
 # threshold and shorter hangover measure it more accurately.
 CHANNEL_REL_K = {0: 6.0, 1: 8.0}
