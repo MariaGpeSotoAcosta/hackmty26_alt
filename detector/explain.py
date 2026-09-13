@@ -5,7 +5,7 @@ from __future__ import annotations
 The production model is `Pipeline([StandardScaler, CalibratedClassifierCV(LogisticRegression)])`.
 Since it's linear, "why did it decide this" is just weight * standardized_value
 per feature, summed to the logit. This mirrors the aggregate weight table in
-detector/README.md, but computed for one real call instead of the whole dataset.
+docs/FEATURES.md, but computed for one real call instead of the whole dataset.
 """
 
 import numpy as np
