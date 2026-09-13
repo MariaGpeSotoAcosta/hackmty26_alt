@@ -11,8 +11,9 @@
   * { box-sizing: border-box; }
   body { margin: 0; padding: 24px; background: var(--bg); color: var(--text);
          font: 14px/1.5 -apple-system, Segoe UI, Roboto, sans-serif; }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  .sub { color: var(--muted); margin: 0 0 24px; }
+  h1 { font-size: 20px; margin: 0 0 20px; }
+  .sub { color: var(--muted); margin: 8px 0 0; }
+  .right-col { display: flex; flex-direction: column; gap: 16px; }
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
            gap: 12px; margin-bottom: 24px; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
@@ -44,7 +45,7 @@
   .empty { color: var(--muted); padding: 24px; text-align: center; }
   .row-click { cursor: pointer; }
   .row-click:hover { background: rgba(255,255,255,.03); }
-  #explain-panel { margin-top: 16px; }
+  #explain-panel { margin: 0; }
   .section-title { font-size: 13px; color: var(--muted); text-transform: uppercase;
                    letter-spacing: .06em; margin: 28px 0 10px; font-weight: 600; }
   .calib-row { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
@@ -61,7 +62,6 @@
 </head>
 <body>
   <h1>Altur detector — llamadas en vivo</h1>
-  <p class="sub">Cada verdicto de <code>/detect</code>. Accuracy, AUC y calibración se recalculan con las llamadas cuyo <code>call_id</code> está en el manifest. Se actualiza cada 5s.</p>
 
   <div class="cards" id="cards"></div>
 
@@ -72,17 +72,41 @@
         <thead><tr><th>Hora</th><th>Veredicto</th><th>Confianza</th><th>Latencia</th></tr></thead>
         <tbody></tbody>
       </table>
-      <div id="explain-panel"></div>
     </div>
-    <div class="panel">
-      <h2>Calibración: confianza vs. lo que pasó de verdad</h2>
-      <div id="calibration"></div>
-      <div class="legend">
-        <span><span class="dot" style="background:var(--accent)"></span>confianza que dio el modelo</span>
-        <span><span class="dot" style="background:#3ddc97"></span>tasa real de sintético en ese grupo</span>
+    <div class="right-col">
+      <div class="panel">
+        <h2>Features</h2>
+        <div id="explain-panel"><div class="empty">Clic en una llamada</div></div>
       </div>
-      <h2 style="margin-top:24px">Confianza promedio en el tiempo</h2>
-      <div class="timeline" id="timeline-conf"></div>
+      <div class="panel">
+        <h2>Qué es cada feature</h2>
+        <table>
+          <thead><tr><th>Feature</th><th>Qué mide</th><th>Hacia sintético si…</th></tr></thead>
+          <tbody>
+            <tr><td><code>turn_caller_mean</code></td><td>Duración media de cada turno del caller</td><td>Turnos largos (bloque de LLM)</td></tr>
+            <tr><td><code>agent_speech_ratio</code></td><td>Fracción de la llamada que habla la agente</td><td>La agente ocupa poco</td></tr>
+            <tr><td><code>lat_med</code></td><td>Espera típica tras el turno de la agente</td><td>Espera larga (cola ASR+LLM)</td></tr>
+            <tr><td><code>lat_mean</code></td><td>Espera promedio</td><td>Igual, en media</td></tr>
+            <tr><td><code>lat_cv</code></td><td>Regularidad de esas esperas</td><td>Casi el mismo tiempo cada turno (metrónomo)</td></tr>
+            <tr><td><code>caller_speech_ratio</code></td><td>Fracción de la llamada que habla el caller</td><td>El caller se mete poco</td></tr>
+            <tr><td><code>agent_barge</code></td><td>Veces que la agente pisa al caller</td><td>La agente lo interrumpe seguido</td></tr>
+            <tr><td><code>turn_caller_std</code></td><td>Variación del largo de turno</td><td>Turnos largos y muy desiguales</td></tr>
+            <tr><td><code>n_caller</code></td><td>Número de turnos del caller</td><td>—</td></tr>
+            <tr><td><code>duration_s</code></td><td>Duración del WAV</td><td>Llamadas más cortas</td></tr>
+          </tbody>
+        </table>
+        <p class="sub">En las barras: rojo empuja a sintético, azul a humano. El número es peso × valor estandarizado, no el valor crudo de la feature.</p>
+      </div>
+      <div class="panel">
+        <h2>Calibración: confianza vs. lo que pasó de verdad</h2>
+        <div id="calibration"></div>
+        <div class="legend">
+          <span><span class="dot" style="background:var(--accent)"></span>confianza que dio el modelo</span>
+          <span><span class="dot" style="background:#3ddc97"></span>tasa real de sintético en ese grupo</span>
+        </div>
+        <h2 style="margin-top:24px">Confianza promedio en el tiempo</h2>
+        <div class="timeline" id="timeline-conf"></div>
+      </div>
     </div>
   </div>
 
@@ -169,7 +193,7 @@
         return;
       }
       const maxAbs = Math.max(...row.contributions.map(c => Math.abs(c.contribution)), 0.01);
-      panel.innerHTML = '<h2>Por qué decidió esto</h2>' + row.contributions.slice(0, 10).map(c => {
+      panel.innerHTML = row.contributions.slice(0, 10).map(c => {
         const pct = (Math.abs(c.contribution) / maxAbs) * 100;
         const cls = c.contribution >= 0 ? 'pos' : 'neg';
         return `<div class="bar-row">
@@ -177,7 +201,7 @@
           <div class="bar-track"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>
           <div class="bar-value">${c.contribution.toFixed(2)}</div>
         </div>`;
-      }).join('') + '<p class="sub" style="margin-top:8px">Rojo empuja a sintético, azul a humano. Barra = tamaño del empujón (peso × valor estandarizado).</p>';
+      }).join('');
     }
 
     async function refresh() {

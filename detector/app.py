@@ -173,9 +173,6 @@ def dashboard_data() -> dict[str, Any]:
     }
 
 
-_DASHBOARD_HTML = (Path(__file__).parent / "dashboard.html").read_text(encoding="utf-8")
-
-
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard() -> str:
-    return _DASHBOARD_HTML
+    return (Path(__file__).parent / "dashboard.html").read_text(encoding="utf-8")
