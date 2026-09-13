@@ -40,8 +40,25 @@
   .bar-fill.neg { background: var(--human); }
   .bar-label { width: 170px; font-size: 12px; color: var(--muted); flex-shrink: 0; }
   .bar-value { width: 60px; text-align: right; font-size: 12px; color: var(--muted); flex-shrink: 0; }
-  .timeline { display: flex; align-items: flex-end; gap: 2px; height: 80px; margin-top: 8px; }
-  .timeline .col { flex: 1; background: var(--accent); border-radius: 2px 2px 0 0; min-height: 2px; }
+  .timeline { display: flex; align-items: flex-end; gap: 2px; height: 108px; margin-top: 8px;
+              padding-top: 28px; overflow: visible; }
+  .timeline .col { flex: 1; background: var(--accent); border-radius: 2px 2px 0 0; min-height: 2px;
+                   position: relative; cursor: default; }
+  .timeline .col .tip {
+    display: none; position: absolute; bottom: calc(100% + 6px); left: 50%;
+    transform: translateX(-50%); background: #1a1e28; border: 1px solid var(--border);
+    color: var(--text); font-size: 11px; line-height: 1.3; padding: 4px 8px;
+    border-radius: 6px; white-space: nowrap; z-index: 8; pointer-events: none;
+  }
+  .timeline .col:hover .tip { display: block; }
+  .note-box {
+    margin-top: 14px; padding: 12px 14px; background: #1a1e28;
+    border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    border-radius: 8px; font-size: 12px; color: var(--muted);
+  }
+  .note-box strong { color: var(--text); font-weight: 600; }
+  .note-box p { margin: 0 0 8px; }
+  .note-box p:last-child { margin: 0; }
   .empty { color: var(--muted); padding: 24px; text-align: center; }
   .row-click { cursor: pointer; }
   .row-click:hover { background: rgba(255,255,255,.03); }
@@ -96,12 +113,17 @@
         </table>
         <p class="sub">En las barras: rojo empuja a sintético, azul a humano. El número es peso × valor estandarizado, no el valor crudo de la feature.</p>
       </div>
-      <div class="panel">
+      <div class="panel" style="overflow:visible">
         <h2>Calibración: confianza vs. lo que pasó de verdad</h2>
         <div id="calibration"></div>
         <div class="legend">
           <span><span class="dot" style="background:var(--accent)"></span>confianza que dio el modelo</span>
           <span><span class="dot" style="background:#3ddc97"></span>tasa real de sintético en ese grupo</span>
+        </div>
+        <div class="note-box">
+          <p><strong>0.0–0.2 … 0.8–1.0</strong> son grupos de <code>p</code> (probabilidad de sintético). Arriba el modelo dijo “casi seguro humano”; abajo, “casi seguro bot”.</p>
+          <p><strong>n=</strong> cuántas llamadas cayeron en ese grupo. Con n chico (1–5) las rayas se separan fácil: un solo error mueve todo.</p>
+          <p><strong>Morado</strong> = <code>p</code> medio que predijo. <strong>Verde</strong> = fracción que sí era sintética. Si están juntas, la confianza se parece a la realidad.</p>
         </div>
         <h2 style="margin-top:24px">Confianza promedio en el tiempo</h2>
         <div class="timeline" id="timeline-conf"></div>
@@ -146,7 +168,8 @@
       el.innerHTML = timeline.map(t => {
         const v = t[key] ?? 0;
         const h = Math.max(2, (v / max) * 100);
-        return `<div class="col" style="height:${h}%" title="${new Date(t.time).toLocaleTimeString()} — ${fmt(v)}"></div>`;
+        const tip = `${new Date(t.time).toLocaleTimeString()} — ${fmt(v)}`;
+        return `<div class="col" style="height:${h}%"><span class="tip">${tip}</span></div>`;
       }).join('');
     }
 
@@ -163,7 +186,7 @@
           </div>
           <div class="calib-n">n=${b.n}</div>
         </div>`;
-      }).join('') + '<p class="sub" style="margin-top:4px">Si el modelo está bien calibrado, la línea verde (realidad) queda pegada a la morada (lo que dijo el modelo) en cada grupo.</p>';
+      }).join('');
     }
 
     function renderCalls(rows) {
