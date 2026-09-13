@@ -61,12 +61,8 @@
 </head>
 <body>
   <h1>Altur detector — llamadas en vivo</h1>
-  <p class="sub">Cada verdicto de <code>/detect</code>, por qué lo decidió, y latencia. Se actualiza cada 5s.</p>
+  <p class="sub">Cada verdicto de <code>/detect</code>. Accuracy, AUC y calibración se recalculan con las llamadas cuyo <code>call_id</code> está en el manifest. Se actualiza cada 5s.</p>
 
-  <div class="section-title" id="benchmark-title" hidden>Benchmark oficial (val, 71 llamadas)</div>
-  <div class="cards" id="benchmark-cards"></div>
-
-  <div class="section-title">En vivo</div>
   <div class="cards" id="cards"></div>
 
   <div class="grid">
@@ -96,13 +92,22 @@
     function fmtPct(x) { return x == null ? '—' : (x * 100).toFixed(1) + '%'; }
     function fmtMs(x) { return x == null ? '—' : x.toFixed(0) + ' ms'; }
 
+    function fmtAuc(x) { return x == null ? '—' : x.toFixed(3); }
+
     function renderCards(stats) {
       const cards = [
-        { label: 'Llamadas (últimas 4h)', value: stats.total ?? 0 },
-        { label: '% sintéticas', value: stats.total ? fmtPct(stats.n_synthetic / stats.total) : '—' },
+        { label: 'Llamadas', value: stats.total ?? 0 },
+        { label: 'Con etiqueta', value: stats.labeled ?? 0 },
+        { label: 'Accuracy', value: fmtPct(stats.accuracy) },
+        { label: 'Balanced accuracy', value: fmtPct(stats.balanced_accuracy) },
+        { label: 'TPR (sintético)', value: fmtPct(stats.tpr_synthetic) },
+        { label: 'TNR (humano)', value: fmtPct(stats.tnr_human) },
+        { label: 'AUC', value: fmtAuc(stats.auc) },
+        { label: 'Brier', value: fmtAuc(stats.brier) },
+        { label: '% pred. sintéticas', value: stats.total ? fmtPct(stats.n_synthetic / stats.total) : '—' },
         { label: 'Confianza media', value: fmtPct(stats.avg_confidence) },
         { label: 'Latencia media', value: fmtMs(stats.avg_latency_ms) },
-        { label: 'Latencia p95', value: fmtMs(stats.p95_latency_ms) },
+        { label: 'Latencia máx.', value: fmtMs(stats.max_latency_ms) },
       ];
       document.getElementById('cards').innerHTML = cards.map(c =>
         `<div class="card"><div class="label">${c.label}</div><div class="value">${c.value}</div></div>`
@@ -119,27 +124,6 @@
         const h = Math.max(2, (v / max) * 100);
         return `<div class="col" style="height:${h}%" title="${new Date(t.time).toLocaleTimeString()} — ${fmt(v)}"></div>`;
       }).join('');
-    }
-
-    function renderBenchmark(benchmark) {
-      const titleEl = document.getElementById('benchmark-title');
-      const cardsEl = document.getElementById('benchmark-cards');
-      if (!benchmark || !benchmark.summary) { titleEl.hidden = true; cardsEl.innerHTML = ''; return; }
-      titleEl.hidden = false;
-      const s = benchmark.summary;
-      const cards = [
-        { label: 'Accuracy', value: fmtPct(s.accuracy) },
-        { label: 'Balanced accuracy', value: fmtPct(s.balanced_accuracy) },
-        { label: 'TPR (sintético)', value: fmtPct(s.tpr_synthetic) },
-        { label: 'TNR (humano)', value: fmtPct(s.tnr_human) },
-        { label: 'AUC', value: s.auc?.toFixed(3) ?? '—' },
-        { label: 'Brier (calibración)', value: s.brier?.toFixed(3) ?? '—' },
-        { label: 'Latencia media', value: s.mean_latency_s?.toFixed(2) + ' s' },
-        { label: 'Latencia máxima', value: s.max_latency_s?.toFixed(2) + ' s' },
-      ];
-      cardsEl.innerHTML = cards.map(c =>
-        `<div class="card"><div class="label">${c.label}</div><div class="value">${c.value}</div></div>`
-      ).join('');
     }
 
     function renderCalibration(bins) {
@@ -201,14 +185,13 @@
         const res = await fetch('/dashboard/data');
         const data = await res.json();
         lastData = data;
-        renderBenchmark(data.benchmark);
-        renderCalibration(data.benchmark && data.benchmark.calibration);
         if (!data.enabled) {
           document.getElementById('cards').innerHTML =
             '<div class="card"><div class="label">Estado</div><div class="value" style="font-size:16px">Tiger Data no configurado (TIGER_DATA_URL)</div></div>';
           return;
         }
         renderCards(data.stats);
+        renderCalibration(data.stats.calibration);
         renderTimeline('timeline-conf', data.stats.timeline, 'avg_confidence', fmtPct);
         renderCalls(data.recent);
       } catch (e) {

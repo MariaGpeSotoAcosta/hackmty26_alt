@@ -8,9 +8,12 @@ is unreachable, logging is a silent no-op: /detect must never fail or slow
 down because the dashboard's database had a hiccup.
 """
 
+import csv
 import os
 from contextlib import contextmanager
 from typing import Any, Iterator
+
+from detector.paths import MANIFEST
 
 _DB_URL = os.environ.get("TIGER_DATA_URL")
 _SCHEMA_READY = False
@@ -117,15 +120,119 @@ def recent_calls(limit: int = 50) -> list[dict]:
         return []
 
 
+_LABELS: dict[str, str] | None = None
+
+
+def _manifest_labels() -> dict[str, str]:
+    global _LABELS
+    if _LABELS is not None:
+        return _LABELS
+    labels: dict[str, str] = {}
+    if MANIFEST.exists():
+        with open(MANIFEST, encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                labels[row["anon_id"]] = row["label"]
+    _LABELS = labels
+    return labels
+
+
+def _auc(scores: list[float], labels: list[int]) -> float | None:
+    pairs = sorted(zip(scores, labels))
+    ranks, i = {}, 0
+    while i < len(pairs):
+        j = i
+        while j < len(pairs) and pairs[j][0] == pairs[i][0]:
+            j += 1
+        for k in range(i, j):
+            ranks[k] = (i + j + 1) / 2
+        i = j
+    pos = [ranks[k] for k, (_, y) in enumerate(pairs) if y == 1]
+    n_pos, n_neg = len(pos), len(pairs) - len(pos)
+    if not n_pos or not n_neg:
+        return None
+    return (sum(pos) - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
+
+
+def _calibration(probs: list[float], ys: list[int], n_bins: int = 5) -> list[dict]:
+    bins = []
+    for i in range(n_bins):
+        lo = i / n_bins
+        hi = (i + 1) / n_bins
+        idx = [k for k, p in enumerate(probs) if (p >= lo and p < hi) or (hi == 1.0 and p == 1.0)]
+        if not idx:
+            continue
+        pred = [probs[k] for k in idx]
+        actual = [ys[k] for k in idx]
+        bins.append(
+            {
+                "bucket_lo": lo,
+                "bucket_hi": hi,
+                "n": len(idx),
+                "mean_predicted": sum(pred) / len(pred),
+                "actual_rate_synthetic": sum(actual) / len(actual),
+            }
+        )
+    return bins
+
+
+def _score_labeled(rows: list[tuple]) -> dict[str, Any]:
+    """rows: (call_id, is_synthetic, confidence, p_synthetic, latency_ms)."""
+    gold = _manifest_labels()
+    labeled = []
+    for call_id, is_synth, conf, p_synth, _lat in rows:
+        label = gold.get(call_id)
+        if label not in ("human", "synthetic"):
+            continue
+        labeled.append(
+            {
+                "label": label,
+                "is_synthetic": bool(is_synth),
+                "confidence": float(conf),
+                "p_synthetic": float(p_synth),
+            }
+        )
+    n_lab = len(labeled)
+    if not n_lab:
+        return {
+            "labeled": 0,
+            "accuracy": None,
+            "balanced_accuracy": None,
+            "tpr_synthetic": None,
+            "tnr_human": None,
+            "auc": None,
+            "brier": None,
+            "calibration": [],
+        }
+    tp = sum(1 for r in labeled if r["label"] == "synthetic" and r["is_synthetic"])
+    tn = sum(1 for r in labeled if r["label"] == "human" and not r["is_synthetic"])
+    n_syn = sum(1 for r in labeled if r["label"] == "synthetic")
+    n_hum = sum(1 for r in labeled if r["label"] == "human")
+    tpr = tp / n_syn if n_syn else None
+    tnr = tn / n_hum if n_hum else None
+    probs = [r["p_synthetic"] for r in labeled]
+    ys = [1 if r["label"] == "synthetic" else 0 for r in labeled]
+    return {
+        "labeled": n_lab,
+        "accuracy": (tp + tn) / n_lab,
+        "tpr_synthetic": tpr,
+        "tnr_human": tnr,
+        "balanced_accuracy": (tpr + tnr) / 2 if tpr is not None and tnr is not None else None,
+        "auc": _auc(probs, ys),
+        "brier": sum((p - y) ** 2 for p, y in zip(probs, ys)) / n_lab,
+        "calibration": _calibration(probs, ys),
+    }
+
+
 def aggregate_stats(window_minutes: int = 240) -> dict:
     if not enabled():
         return {"available": False}
     try:
         with _conn() as conn:
-            total, n_synth, avg_conf, avg_latency, p95_latency = conn.execute(
+            total, n_synth, avg_conf, avg_latency, p95_latency, max_latency = conn.execute(
                 """
                 SELECT count(*), sum(is_synthetic::int), avg(confidence),
-                       avg(latency_ms), percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)
+                       avg(latency_ms), percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms),
+                       max(latency_ms)
                 FROM calls WHERE time > now() - (%s || ' minutes')::interval
                 """,
                 (window_minutes,),
@@ -139,13 +246,21 @@ def aggregate_stats(window_minutes: int = 240) -> dict:
                 """,
                 (window_minutes,),
             ).fetchall()
-        return {
+            scored = conn.execute(
+                """
+                SELECT call_id, is_synthetic, confidence, p_synthetic, latency_ms
+                FROM calls WHERE time > now() - (%s || ' minutes')::interval
+                """,
+                (window_minutes,),
+            ).fetchall()
+        out = {
             "available": True,
             "total": total or 0,
             "n_synthetic": n_synth or 0,
             "avg_confidence": float(avg_conf) if avg_conf is not None else None,
             "avg_latency_ms": float(avg_latency) if avg_latency is not None else None,
             "p95_latency_ms": float(p95_latency) if p95_latency is not None else None,
+            "max_latency_ms": float(max_latency) if max_latency is not None else None,
             "timeline": [
                 {
                     "time": b[0].isoformat(),
@@ -156,5 +271,7 @@ def aggregate_stats(window_minutes: int = 240) -> dict:
                 for b in buckets
             ],
         }
+        out.update(_score_labeled(list(scored)))
+        return out
     except Exception:
         return {"available": False}
