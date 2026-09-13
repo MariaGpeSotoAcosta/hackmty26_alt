@@ -164,12 +164,25 @@ async def detect(request: Request) -> JSONResponse:
     return await _verdict_response(data, call_id)
 
 
+_BENCHMARK_PATH = Path(__file__).parent / "benchmark.json"
+
+
+def _load_benchmark() -> dict | None:
+    if not _BENCHMARK_PATH.exists():
+        return None
+    try:
+        return json.loads(_BENCHMARK_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
 @app.get("/dashboard/data")
 def dashboard_data() -> dict[str, Any]:
     return {
         "enabled": logging_db.enabled(),
         "stats": logging_db.aggregate_stats() if logging_db.enabled() else {"available": False},
         "recent": logging_db.recent_calls(limit=30) if logging_db.enabled() else [],
+        "benchmark": _load_benchmark(),
     }
 
 
