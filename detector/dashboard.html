@@ -143,7 +143,6 @@
     function renderCards(stats) {
       const cards = [
         { label: 'Llamadas', value: stats.total ?? 0 },
-        { label: 'Con etiqueta', value: stats.labeled ?? 0 },
         { label: 'Accuracy', value: fmtPct(stats.accuracy) },
         { label: 'Balanced accuracy', value: fmtPct(stats.balanced_accuracy) },
         { label: 'TPR (sintético)', value: fmtPct(stats.tpr_synthetic) },
