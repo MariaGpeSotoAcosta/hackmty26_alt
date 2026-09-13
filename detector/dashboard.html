@@ -79,17 +79,16 @@
         <div id="explain-panel"><div class="empty">Clic en una llamada</div></div>
       </div>
       <div class="panel">
-        <h2>Qué es cada feature</h2>
         <table>
           <thead><tr><th>Feature</th><th>Qué mide</th><th>Hacia sintético si…</th></tr></thead>
           <tbody>
             <tr><td><code>turn_caller_mean</code></td><td>Duración media de cada turno del caller</td><td>Turnos largos (bloque de LLM)</td></tr>
-            <tr><td><code>agent_speech_ratio</code></td><td>Fracción de la llamada que habla la agente</td><td>La agente ocupa poco</td></tr>
-            <tr><td><code>lat_med</code></td><td>Espera típica tras el turno de la agente</td><td>Espera larga (cola ASR+LLM)</td></tr>
+            <tr><td><code>agent_speech_ratio</code></td><td>Fracción de la llamada que habla el agente</td><td>El agente ocupa poco</td></tr>
+            <tr><td><code>lat_med</code></td><td>Espera típica tras el turno del agente</td><td>Espera larga (cola ASR+LLM)</td></tr>
             <tr><td><code>lat_mean</code></td><td>Espera promedio</td><td>Igual, en media</td></tr>
             <tr><td><code>lat_cv</code></td><td>Regularidad de esas esperas</td><td>Casi el mismo tiempo cada turno (metrónomo)</td></tr>
             <tr><td><code>caller_speech_ratio</code></td><td>Fracción de la llamada que habla el caller</td><td>El caller se mete poco</td></tr>
-            <tr><td><code>agent_barge</code></td><td>Veces que la agente pisa al caller</td><td>La agente lo interrumpe seguido</td></tr>
+            <tr><td><code>agent_barge</code></td><td>Veces que el agente pisa al caller</td><td>El agente lo interrumpe seguido</td></tr>
             <tr><td><code>turn_caller_std</code></td><td>Variación del largo de turno</td><td>Turnos largos y muy desiguales</td></tr>
             <tr><td><code>n_caller</code></td><td>Número de turnos del caller</td><td>—</td></tr>
             <tr><td><code>duration_s</code></td><td>Duración del WAV</td><td>Llamadas más cortas</td></tr>
@@ -112,6 +111,7 @@
 
   <script>
     let lastData = null;
+    let selectedIndex = null;
 
     function fmtPct(x) { return x == null ? '—' : (x * 100).toFixed(1) + '%'; }
     function fmtMs(x) { return x == null ? '—' : x.toFixed(0) + ' ms'; }
@@ -183,9 +183,12 @@
           <td>${fmtMs(r.latency_ms)}</td>
         </tr>`;
       }).join('');
+      if (selectedIndex == null && rows.length) selectedIndex = 0;
+      if (selectedIndex != null && rows.length) showExplain(Math.min(selectedIndex, rows.length - 1));
     }
 
     function showExplain(i) {
+      selectedIndex = i;
       const row = lastData.recent[i];
       const panel = document.getElementById('explain-panel');
       if (!row.contributions) {
