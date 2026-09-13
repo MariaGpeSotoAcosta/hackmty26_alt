@@ -12,7 +12,7 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_NAME="altur-detector"
-PORT="${PORT:-8000}"
+PORT="${PORT:-8080}"
 
 echo "==> Instalando Python y dependencias del sistema"
 apt-get update -y
